@@ -1,0 +1,12 @@
+from dotenv import load_dotenv
+from supabase import create_client
+import os
+
+load_dotenv()
+
+url = os.getenv("SUPABASE_URL")
+key = os.getenv("SUPABASE_SERVICE_KEY")
+
+supabase = create_client(url, key)
+
+print(supabase.table("users").select("*").execute())
