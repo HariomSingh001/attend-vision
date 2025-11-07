@@ -21,5 +21,6 @@ Frontend: Next.js, TypeScript, Tailwind CSS, Shadcn/UI
 Database: PostgreSQL (via Supabase)
 
 🌟 Why Attend Vision?
+
 This project is more than just a tool—it's a demonstration of how modern AI can solve everyday problems. It's a perfect showcase of a full-stack application, combining a powerful machine learning backend with a polished, user-friendly frontend.
 
