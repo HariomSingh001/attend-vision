@@ -1,0 +1,70 @@
+# Created by Gemini
+
+# General
+# =================================
+# OS-generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE settings
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# Log files
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+
+# Frontend (frontend_for_project)
+# =================================
+# Dependencies
+/frontend_for_project/node_modules/
+/frontend_for_project/.pnp
+/frontend_for_project/.pnp.*
+
+# Next.js build output
+/frontend_for_project/.next/
+/frontend_for_project/out/
+
+# Other build outputs
+/frontend_for_project/build/
+/frontend_for_project/dist/
+/frontend_for_project/coverage/
+
+# Environment variables
+/frontend_for_project/.env*.local
+/frontend_for_project/.env
+
+# TypeScript
+/frontend_for_project/*.tsbuildinfo
+/frontend_for_project/next-env.d.ts
+
+# Misc
+/frontend_for_project/.vercel/
+
+
+# Backend (backend_for_project)
+# =================================
+# Python virtual environment
+/backend_for_project/venv/
+
+# Python cache
+/backend_for_project/__pycache__/
+*.pyc
+
+# Environment variables
+/backend_for_project/.env
+
+# SQLite databases
+*.sqlite3
