@@ -63,10 +63,13 @@ IDENTITY_WINDOW_SECONDS = float(os.getenv("IDENTITY_WINDOW_SECONDS", "8"))
 IDENTITY_CONFIDENCE_THRESHOLD = float(os.getenv("IDENTITY_CONFIDENCE_THRESHOLD", "0.65"))
 IDENTITY_CONFIDENCE_DECAY = float(os.getenv("IDENTITY_CONFIDENCE_DECAY", "0.05"))
 IDENTITY_CONFIDENCE_MIN = float(os.getenv("IDENTITY_CONFIDENCE_MIN", "0.4"))
-MIN_CONFIDENCE = float(os.getenv("FACE_MIN_CONFIDENCE", "0.70"))  # Require high confidence for recognition
-MIN_CONFIDENCE_MARGIN = float(os.getenv("FACE_MIN_CONFIDENCE_MARGIN", "0.10"))  # Margin between 1st and 2nd prediction
-MIN_FACE_SIZE = int(os.getenv("MIN_FACE_SIZE", "60"))  # Minimum face size in pixels
-BLUR_THRESHOLD = float(os.getenv("BLUR_THRESHOLD", "50.0"))  # Blur detection threshold
+# CRITICAL: Face recognition thresholds - tuned for accuracy
+MIN_CONFIDENCE = float(os.getenv("FACE_MIN_CONFIDENCE", "0.85"))  # Require VERY high confidence (was 0.70)
+MIN_CONFIDENCE_MARGIN = float(os.getenv("FACE_MIN_CONFIDENCE_MARGIN", "0.20"))  # Strong margin between candidates (was 0.10)
+MIN_FACE_SIZE = int(os.getenv("MIN_FACE_SIZE", "80"))  # Larger minimum face size for better quality (was 60)
+BLUR_THRESHOLD = float(os.getenv("BLUR_THRESHOLD", "100.0"))  # Stricter blur detection (was 50.0)
+MAX_FACE_SIZE = int(os.getenv("MAX_FACE_SIZE", "400"))  # Maximum face size to avoid false positives
+MIN_SAMPLES_PER_STUDENT = int(os.getenv("MIN_SAMPLES_PER_STUDENT", "10"))  # Minimum training samples required
 
 # Paths
 # NAMES_FILE = "data/names.pkl"
@@ -402,9 +405,19 @@ def capture_faces(roll_number: str, name: str, email: str | None = None):
                     i += 1
                     continue
                 
-                # Resize and normalize
+                # CRITICAL: Use SAME preprocessing as recognition for consistency
                 resized_img = cv2.resize(crop_img, (50, 50))
-                normalized_img = resized_img.astype(np.float32) / 255.0
+                
+                # Apply histogram equalization (same as recognition)
+                resized_gray = cv2.cvtColor(resized_img, cv2.COLOR_BGR2GRAY)
+                equalized = cv2.equalizeHist(resized_gray)
+                resized_img_eq = cv2.cvtColor(equalized, cv2.COLOR_GRAY2BGR)
+                
+                # Normalize to 0-1 range
+                normalized_img = resized_img_eq.astype(np.float32) / 255.0
+                
+                # Apply Gaussian blur to reduce noise (same as recognition)
+                normalized_img = cv2.GaussianBlur(normalized_img, (3, 3), 0)
 
                 if len(faces_data) < 100:
                     faces_data.append(normalized_img.flatten().tolist())
@@ -614,11 +627,23 @@ async def recognize_frame(frame: UploadFile = File(...), subject_id: str = Form(
         
         print(f"Training KNN with {len(faces_data)} face samples for {len(unique_labels)} students")
 
-        # Use weighted KNN with smaller k for better discrimination
+        # IMPROVED: Use optimized KNN with better parameters
+        # Calculate optimal k: sqrt(n) but ensure it's odd and at least 5
+        optimal_k = max(5, min(int(np.sqrt(len(faces_data))), 15))
+        if optimal_k % 2 == 0:
+            optimal_k += 1  # Make it odd to avoid ties
+        
+        # Ensure k doesn't exceed number of samples
+        k_neighbors = min(optimal_k, len(faces_data) - 1)
+        
+        print(f"Using k={k_neighbors} neighbors (optimal for {len(faces_data)} samples)")
+        
         knn = KNeighborsClassifier(
-            n_neighbors=min(3, len(unique_labels)),
-            weights='distance',  # Weight by distance for better accuracy
-            metric='euclidean'
+            n_neighbors=k_neighbors,
+            weights='distance',  # Weight by inverse distance for better accuracy
+            metric='euclidean',
+            algorithm='ball_tree',  # Faster for high-dimensional data
+            leaf_size=30
         )
         knn.fit(X, y)
         readable_labels = [student_map.get(label, label) for label in unique_labels]
@@ -637,10 +662,15 @@ async def recognize_frame(frame: UploadFile = File(...), subject_id: str = Form(
         
         for (x, y, w, h) in faces:
             try:
-                # Check face size - reject small faces
+                # Check face size - reject small OR too large faces
                 if w < MIN_FACE_SIZE or h < MIN_FACE_SIZE:
                     rejection_stats["small"] += 1
                     print(f"Skipping small face: {w}x{h} (minimum {MIN_FACE_SIZE}x{MIN_FACE_SIZE})")
+                    continue
+                
+                if w > MAX_FACE_SIZE or h > MAX_FACE_SIZE:
+                    rejection_stats["small"] += 1
+                    print(f"Skipping too large face: {w}x{h} (maximum {MAX_FACE_SIZE}x{MAX_FACE_SIZE})")
                     continue
                 
                 crop_img = img[y:y+h, x:x+w, :]
@@ -653,35 +683,73 @@ async def recognize_frame(frame: UploadFile = File(...), subject_id: str = Form(
                     print(f"Skipping blurry face: blur score {laplacian_var:.2f} (threshold {BLUR_THRESHOLD})")
                     continue
                 
-                # Normalize and preprocess
+                # IMPROVED: Enhanced preprocessing with histogram equalization
                 resized_img = cv2.resize(crop_img, (50, 50))
+                
+                # Apply histogram equalization for better lighting normalization
+                resized_gray = cv2.cvtColor(resized_img, cv2.COLOR_BGR2GRAY)
+                equalized = cv2.equalizeHist(resized_gray)
+                
+                # Convert back to BGR for consistency with training data
+                resized_img_eq = cv2.cvtColor(equalized, cv2.COLOR_GRAY2BGR)
+                
                 # Normalize pixel values to 0-1 range
-                normalized_img = resized_img.astype(np.float32) / 255.0
+                normalized_img = resized_img_eq.astype(np.float32) / 255.0
+                
+                # Apply Gaussian blur to reduce noise
+                normalized_img = cv2.GaussianBlur(normalized_img, (3, 3), 0)
+                
                 flattened_img = normalized_img.flatten().reshape(1, -1)
 
+                # IMPROVED: Multi-stage confidence validation
                 probabilities = knn.predict_proba(flattened_img)
                 sorted_probs = np.sort(probabilities[0])[::-1]  # Sort descending
                 max_prob = float(sorted_probs[0])
                 second_prob = float(sorted_probs[1]) if len(sorted_probs) > 1 else 0.0
+                third_prob = float(sorted_probs[2]) if len(sorted_probs) > 2 else 0.0
                 
-                # Check confidence threshold
+                # Stage 1: Absolute confidence threshold (STRICT)
                 if max_prob < MIN_CONFIDENCE:
                     rejection_stats["low_confidence"] += 1
                     print(
-                        f"Skipping prediction due to low confidence: "
-                        f"{max_prob:.2f} (threshold {MIN_CONFIDENCE:.2f})"
+                        f"❌ Stage 1 FAIL: Low confidence {max_prob:.3f} < {MIN_CONFIDENCE:.3f}"
                     )
                     continue
                 
-                # Check margin between top 2 predictions (avoid ambiguous matches)
+                # Stage 2: Margin between top 2 predictions (avoid ambiguous matches)
                 confidence_margin = max_prob - second_prob
                 if confidence_margin < MIN_CONFIDENCE_MARGIN:
                     rejection_stats["ambiguous"] += 1
                     print(
-                        f"Skipping ambiguous prediction: margin {confidence_margin:.2f} "
-                        f"(threshold {MIN_CONFIDENCE_MARGIN:.2f})"
+                        f"❌ Stage 2 FAIL: Ambiguous margin {confidence_margin:.3f} < {MIN_CONFIDENCE_MARGIN:.3f} "
+                        f"(top2: {max_prob:.3f} vs {second_prob:.3f})"
                     )
                     continue
+                
+                # Stage 3: Ensure top prediction is significantly better than 3rd
+                if len(sorted_probs) > 2:
+                    third_margin = max_prob - third_prob
+                    if third_margin < MIN_CONFIDENCE_MARGIN * 1.5:
+                        rejection_stats["ambiguous"] += 1
+                        print(
+                            f"❌ Stage 3 FAIL: Top prediction not dominant enough "
+                            f"(margin to 3rd: {third_margin:.3f})"
+                        )
+                        continue
+                
+                # Stage 4: Check if prediction is consistent (distance-based validation)
+                distances, indices = knn.kneighbors(flattened_img)
+                avg_distance = float(np.mean(distances[0]))
+                max_acceptable_distance = 0.3  # Tune based on your data
+                
+                if avg_distance > max_acceptable_distance:
+                    rejection_stats["low_confidence"] += 1
+                    print(
+                        f"❌ Stage 4 FAIL: Average distance too high {avg_distance:.3f} > {max_acceptable_distance:.3f}"
+                    )
+                    continue
+                
+                print(f"✅ ALL STAGES PASSED: confidence={max_prob:.3f}, margin={confidence_margin:.3f}, avg_dist={avg_distance:.3f}")
 
                 prediction = knn.predict(flattened_img)[0]
                 student_id = prediction
@@ -1632,4 +1700,222 @@ def get_student_attendance_summary(student_id: str):
         
     except Exception as e:
         print(f"❌ Error getting student summary: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+# -------------------------
+# Reports Endpoints
+# -------------------------
+@app.get("/reports/overview")
+def get_reports_overview():
+    """Get comprehensive overview for reports dashboard"""
+    try:
+        from datetime import datetime, timedelta
+        
+        # Get all students with attendance data
+        students_resp = supabase.table("students").select("id, name, email, student_roll_number").execute()
+        students = students_resp.data or []
+        
+        # Get all attendance records
+        attendance_resp = supabase.table("attendance").select("*").execute()
+        attendance_records = attendance_resp.data or []
+        
+        # Calculate statistics
+        total_students = len(students)
+        total_attendance_records = len(attendance_records)
+        
+        # Calculate present/absent counts
+        present_count = sum(1 for r in attendance_records if r.get("status") == "present")
+        absent_count = sum(1 for r in attendance_records if r.get("status") == "absent")
+        late_count = sum(1 for r in attendance_records if r.get("status") == "late")
+        
+        # Calculate overall attendance percentage
+        overall_percentage = (present_count / total_attendance_records * 100) if total_attendance_records > 0 else 0
+        
+        # Get attendance by date (last 30 days)
+        today = datetime.now().date()
+        thirty_days_ago = today - timedelta(days=30)
+        
+        daily_attendance = {}
+        for record in attendance_records:
+            record_date = record.get("date")
+            if record_date:
+                if record_date not in daily_attendance:
+                    daily_attendance[record_date] = {"present": 0, "absent": 0, "late": 0, "total": 0}
+                
+                status = record.get("status", "").lower()
+                daily_attendance[record_date]["total"] += 1
+                if status == "present":
+                    daily_attendance[record_date]["present"] += 1
+                elif status == "absent":
+                    daily_attendance[record_date]["absent"] += 1
+                elif status == "late":
+                    daily_attendance[record_date]["late"] += 1
+        
+        # Sort by date
+        daily_stats = [
+            {
+                "date": date,
+                "present": stats["present"],
+                "absent": stats["absent"],
+                "late": stats["late"],
+                "total": stats["total"],
+                "percentage": round((stats["present"] / stats["total"] * 100) if stats["total"] > 0 else 0, 2)
+            }
+            for date, stats in sorted(daily_attendance.items())
+        ]
+        
+        # Calculate per-student statistics
+        student_stats = []
+        for student in students:
+            student_id = student.get("id")
+            student_records = [r for r in attendance_records if r.get("student_id") == student_id]
+            
+            total = len(student_records)
+            present = sum(1 for r in student_records if r.get("status") == "present")
+            absent = sum(1 for r in student_records if r.get("status") == "absent")
+            late = sum(1 for r in student_records if r.get("status") == "late")
+            
+            percentage = (present / total * 100) if total > 0 else 0
+            
+            student_stats.append({
+                "id": student_id,
+                "name": student.get("name", "Unknown"),
+                "roll_number": student.get("student_roll_number", "N/A"),
+                "email": student.get("email", ""),
+                "total_classes": total,
+                "present": present,
+                "absent": absent,
+                "late": late,
+                "percentage": round(percentage, 2),
+                "status": "good" if percentage >= 75 else "warning" if percentage >= 60 else "critical"
+            })
+        
+        # Sort by percentage (lowest first for attention)
+        student_stats.sort(key=lambda x: x["percentage"])
+        
+        # Get alerts summary
+        alerts_resp = supabase.table("attendance_alerts").select("*").execute()
+        alerts = alerts_resp.data or []
+        
+        # Count alerts by date
+        alerts_by_date = {}
+        for alert in alerts:
+            alert_date = alert.get("alert_date")
+            if alert_date:
+                alerts_by_date[alert_date] = alerts_by_date.get(alert_date, 0) + 1
+        
+        return {
+            "status": "success",
+            "summary": {
+                "total_students": total_students,
+                "total_records": total_attendance_records,
+                "overall_percentage": round(overall_percentage, 2),
+                "present_count": present_count,
+                "absent_count": absent_count,
+                "late_count": late_count,
+                "total_alerts": len(alerts)
+            },
+            "daily_attendance": daily_stats[-30:],  # Last 30 days
+            "student_statistics": student_stats,
+            "low_attendance_students": [s for s in student_stats if s["percentage"] < 75],
+            "alerts_summary": [
+                {"date": date, "count": count}
+                for date, count in sorted(alerts_by_date.items())
+            ]
+        }
+        
+    except Exception as e:
+        print(f"❌ Error generating reports overview: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/reports/student/{student_id}")
+def get_student_report(student_id: str):
+    """Get detailed report for a specific student"""
+    try:
+        # Get student details
+        student_resp = supabase.table("students").select("id, name, email, student_roll_number, address, avatar_url").eq("id", student_id).execute()
+        
+        if not student_resp.data:
+            return {"status": "error", "message": "Student not found"}
+        
+        student = student_resp.data[0]
+        
+        # Get all attendance records for this student
+        attendance_resp = supabase.table("attendance").select("*").eq("student_id", student_id).order("date", desc=True).execute()
+        records = attendance_resp.data or []
+        
+        # Calculate statistics
+        total = len(records)
+        present = sum(1 for r in records if r.get("status") == "present")
+        absent = sum(1 for r in records if r.get("status") == "absent")
+        late = sum(1 for r in records if r.get("status") == "late")
+        
+        percentage = (present / total * 100) if total > 0 else 0
+        
+        # Get attendance by month
+        monthly_stats = {}
+        for record in records:
+            date_str = record.get("date")
+            if date_str:
+                # Extract year-month
+                month_key = date_str[:7]  # YYYY-MM
+                if month_key not in monthly_stats:
+                    monthly_stats[month_key] = {"present": 0, "absent": 0, "late": 0, "total": 0}
+                
+                monthly_stats[month_key]["total"] += 1
+                status = record.get("status", "").lower()
+                if status == "present":
+                    monthly_stats[month_key]["present"] += 1
+                elif status == "absent":
+                    monthly_stats[month_key]["absent"] += 1
+                elif status == "late":
+                    monthly_stats[month_key]["late"] += 1
+        
+        monthly_data = [
+            {
+                "month": month,
+                "present": stats["present"],
+                "absent": stats["absent"],
+                "late": stats["late"],
+                "total": stats["total"],
+                "percentage": round((stats["present"] / stats["total"] * 100) if stats["total"] > 0 else 0, 2)
+            }
+            for month, stats in sorted(monthly_stats.items())
+        ]
+        
+        # Get alerts for this student
+        alerts_resp = supabase.table("attendance_alerts").select("*").eq("student_id", student_id).order("alert_date", desc=True).execute()
+        alerts = alerts_resp.data or []
+        
+        return {
+            "status": "success",
+            "student": {
+                "id": student.get("id"),
+                "name": student.get("name"),
+                "roll_number": student.get("student_roll_number"),
+                "email": student.get("email"),
+                "address": student.get("address"),
+                "avatar_url": student.get("avatar_url")
+            },
+            "attendance_summary": {
+                "total_classes": total,
+                "present": present,
+                "absent": absent,
+                "late": late,
+                "percentage": round(percentage, 2),
+                "status": "good" if percentage >= 75 else "warning" if percentage >= 60 else "critical"
+            },
+            "monthly_attendance": monthly_data,
+            "recent_records": records[:20],  # Last 20 records
+            "alerts": alerts
+        }
+        
+    except Exception as e:
+        print(f"❌ Error generating student report: {e}")
+        import traceback
+        traceback.print_exc()
         return {"status": "error", "message": str(e)}

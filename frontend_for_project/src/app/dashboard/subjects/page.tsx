@@ -9,6 +9,7 @@ import { Plus, Trash, Edit, Book } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { useToast } from '@/hooks/use-toast';
 import { formatSubjectsForDisplay, SubjectDisplay, ApiSubject } from '@/lib/subjects';
+import { LoadingScreen } from '@/components/ui/loading-screen';
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
 
@@ -140,6 +141,10 @@ export default function SubjectsPage() {
     }
   };
 
+  if (isLoading) {
+    return <LoadingScreen message="Loading subjects..." />;
+  }
+
   return (
     <div>
       <Card>
@@ -153,9 +158,7 @@ export default function SubjectsPage() {
           </Button>
         </CardHeader>
         <CardContent>
-          {isLoading ? (
-            <p>Loading subjects...</p>
-          ) : subjects.length === 0 ? (
+          {subjects.length === 0 ? (
             <div className="text-center py-8">
               <Book className="mx-auto h-12 w-12 text-muted-foreground mb-4" />
               <p className="text-muted-foreground">No subjects found. Add your first subject!</p>

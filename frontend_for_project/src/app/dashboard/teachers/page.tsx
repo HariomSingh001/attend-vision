@@ -57,6 +57,7 @@ import {
   FormMessage,
 } from '@/components/ui/form';
 import { useToast } from '@/hooks/use-toast';
+import { LoadingScreen } from '@/components/ui/loading-screen';
 
 const teacherFormSchema = z.object({
     id: z.number().optional(),
@@ -227,6 +228,10 @@ export default function TeachersPage() {
   };
 
   const avatar = form.watch('avatar');
+
+  if (isLoading) {
+    return <LoadingScreen message="Loading teachers..." />;
+  }
 
   return (
     <div>

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Book } from "lucide-react";
 import { formatSubjectsForDisplay, SubjectDisplay } from "@/lib/subjects";
+import { LoadingScreen } from "@/components/ui/loading-screen";
 
 const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || "http://127.0.0.1:8000";
 
@@ -31,6 +32,10 @@ export default function LiveAttendancePage() {
     fetchSubjects();
   }, []);
 
+  if (isLoading) {
+    return <LoadingScreen message="Loading subjects..." />;
+  }
+
   return (
     <div className="space-y-6">
       <Card>
@@ -39,9 +44,7 @@ export default function LiveAttendancePage() {
           <CardDescription>Select a subject to start a live attendance session.</CardDescription>
         </CardHeader>
         <CardContent>
-          {isLoading ? (
-            <p>Loading subjects...</p>
-          ) : subjects.length === 0 ? (
+          {subjects.length === 0 ? (
             <div className="text-center py-8">
               <Book className="mx-auto h-12 w-12 text-muted-foreground mb-4" />
               <p className="text-muted-foreground">No subjects found. Add a subject to begin.</p>

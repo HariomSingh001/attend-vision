@@ -48,6 +48,7 @@ import { MoreVertical, UserPlus, Edit, Trash2, Ban, Search, MailWarning } from '
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useToast } from '@/hooks/use-toast';
+import { LoadingScreen } from '@/components/ui/loading-screen';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -302,6 +303,10 @@ export default function StudentsPage() {
 
   const avatar = form.watch('avatar');
 
+  if (isLoading) {
+    return <LoadingScreen message="Loading students..." />;
+  }
+
   return (
     <div>
       <Card>
@@ -477,13 +482,7 @@ export default function StudentsPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {isLoading ? (
-                <TableRow>
-                  <TableCell colSpan={4} className="h-24 text-center">
-                    Loading students...
-                  </TableCell>
-                </TableRow>
-              ) : filteredStudents.length > 0 ? (
+              {filteredStudents.length > 0 ? (
                 filteredStudents.map((student) => (
                   <TableRow key={student.id} className={`${student.status === 'blocked' ? 'opacity-50' : ''} cursor-pointer hover:bg-muted/50`} onClick={() => handleRowClick(student.id)}>
                     <TableCell className="font-medium">

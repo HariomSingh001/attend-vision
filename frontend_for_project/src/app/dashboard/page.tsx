@@ -56,6 +56,7 @@ import { ImBooks } from 'react-icons/im';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { cn } from '@/lib/utils';
 import Link from 'next/link';
+import { LoadingScreen } from '@/components/ui/loading-screen';
 
 export default function DashboardPage() {
   const [students, setStudents] = useState<Student[]>([]);
@@ -191,6 +192,10 @@ export default function DashboardPage() {
     };
     return cn('capitalize', variants[status]);
   };
+
+  if (isLoadingStudents) {
+    return <LoadingScreen message="Loading dashboard..." />;
+  }
   
   return (
     <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
@@ -200,7 +205,7 @@ export default function DashboardPage() {
           <Users className="h-4 w-4 text-muted-foreground" />
         </CardHeader>
         <CardContent>
-          <div className="text-2xl font-bold">{isLoadingStudents ? '...' : students.length}</div>
+          <div className="text-2xl font-bold">{students.length}</div>
           <p className="text-xs text-muted-foreground">Total students enrolled</p>
         </CardContent>
       </Card>
