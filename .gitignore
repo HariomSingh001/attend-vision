@@ -58,13 +58,32 @@ pnpm-debug.log*
 # =================================
 # Python virtual environment
 /backend_for_project/venv/
+/backend_for_project/env/
+/backend_for_project/.venv/
 
 # Python cache
 /backend_for_project/__pycache__/
-*.pyc
+/backend_for_project/*.pyc
+/backend_for_project/*.pyo
+/backend_for_project/*.pyd
+/backend_for_project/.Python
+/backend_for_project/*.so
+/backend_for_project/*.egg
+/backend_for_project/*.egg-info/
+/backend_for_project/dist/
+/backend_for_project/build/
 
 # Environment variables
 /backend_for_project/.env
+/backend_for_project/.env.local
+/backend_for_project/.env.*.local
 
 # SQLite databases
 *.sqlite3
+*.db
+
+# Python compiled files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
