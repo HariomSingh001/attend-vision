@@ -1,9 +1,13 @@
 import os
-import time 
+import time
+import sys
+import tempfile
+import torch
+from deepface import DeepFace
 from datetime import datetime
 from supabase import create_client, Client
 import cv2
-from sklearn.neighbors import KNeighborsClassifier
+# from sklearn.neighbors import KNeighborsClassifier
 from db_utils import check_and_record_low_attendance
 from email_utils import send_email
 from supabase_client import supabase
@@ -50,123 +54,145 @@ SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")  # backend only
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
-LIVENESS_THRESHOLD = float(os.getenv("LIVENESS_THRESHOLD", "0.4"))
-LIVENESS_EDGE_DIVISOR = float(os.getenv("LIVENESS_EDGE_DIVISOR", "350.0"))
-LIVENESS_CONTRAST_DIVISOR = float(os.getenv("LIVENESS_CONTRAST_DIVISOR", "80.0"))
+# LIVENESS_THRESHOLD = float(os.getenv("LIVENESS_THRESHOLD", "0.4"))
+# LIVENESS_EDGE_DIVISOR = float(os.getenv("LIVENESS_EDGE_DIVISOR", "350.0"))
+# LIVENESS_CONTRAST_DIVISOR = float(os.getenv("LIVENESS_CONTRAST_DIVISOR", "80.0"))
+# SPOOF_ALERT_TABLE = os.getenv("SPOOF_ALERT_TABLE", "attendance_alerts")
+
+# IDENTITY_DISTANCE_SCALE = float(os.getenv("IDENTITY_DISTANCE_SCALE", "1.6"))
+# IDENTITY_REQUIRED_SIGHTINGS = int(os.getenv("IDENTITY_REQUIRED_SIGHTINGS", "2"))
+# IDENTITY_WINDOW_SECONDS = float(os.getenv("IDENTITY_WINDOW_SECONDS", "8"))
+
+# --- 2. SETUP LIVENESS MODEL (SilentFace) ---
+LIVENESS_REPO_PATH = 'anti_spoofing'
+sys.path.append(LIVENESS_REPO_PATH)
+try:
+    from anti_spoofing.src.anti_spoof_predict import AntiSpoofPredict
+except ImportError:
+    print(f"Error: Could not import AntiSpoofPredict. Check path: {LIVENESS_REPO_PATH}")
+    sys.exit(1)
+
+print("Loading models, please wait...")
+
+# # Confidence calculation constants
+# IDENTITY_CONFIDENCE_THRESHOLD = float(os.getenv("IDENTITY_CONFIDENCE_THRESHOLD", "0.65"))
+# IDENTITY_CONFIDENCE_DECAY = float(os.getenv("IDENTITY_CONFIDENCE_DECAY", "0.05"))
+# IDENTITY_CONFIDENCE_MIN = float(os.getenv("IDENTITY_CONFIDENCE_MIN", "0.4"))
+# # CRITICAL: Face recognition thresholds - tuned for accuracy
+# MIN_CONFIDENCE = float(os.getenv("FACE_MIN_CONFIDENCE", "0.85"))  # Require VERY high confidence (was 0.70)
+# MIN_CONFIDENCE_MARGIN = float(os.getenv("FACE_MIN_CONFIDENCE_MARGIN", "0.20"))  # Strong margin between candidates (was 0.10)
+MIN_FACE_SIZE = int(os.getenv("MIN_FACE_SIZE", "80"))  # Larger minimum face size for better quality (was 60)
+BLUR_THRESHOLD = float(os.getenv("BLUR_THRESHOLD", "30.0"))  # More lenient blur detection for webcam (was 100.0)
+MAX_FACE_SIZE = int(os.getenv("MAX_FACE_SIZE", "1200"))  # Allow much larger faces for smartphone photos (was 400)
+# MIN_SAMPLES_PER_STUDENT = int(os.getenv("MIN_SAMPLES_PER_STUDENT", "10"))  # Minimum training samples required
+
+# --- 4. DEFINE GLOBAL CONSTANTS ---
+# AI Constants
+FACE_MODEL_NAME = "ArcFace"
+RECOGNITION_THRESHOLD = 0.50  # 50% similarity - Lowered to debug matching issues
+LIVENESS_THRESHOLD = 0.5      # 50% - Balanced threshold for real webcam feeds (real faces typically score 0.5-0.7)
+
 SPOOF_ALERT_TABLE = os.getenv("SPOOF_ALERT_TABLE", "attendance_alerts")
 
-IDENTITY_DISTANCE_SCALE = float(os.getenv("IDENTITY_DISTANCE_SCALE", "1.6"))
-IDENTITY_REQUIRED_SIGHTINGS = int(os.getenv("IDENTITY_REQUIRED_SIGHTINGS", "2"))
-IDENTITY_WINDOW_SECONDS = float(os.getenv("IDENTITY_WINDOW_SECONDS", "8"))
+# --- 3. HELPER FUNCTIONS ---
+def expand_bbox(x, y, w, h, scale=1.3, img_w=0, img_h=0):
+    """Expand bounding box by scale factor for better liveness detection"""
+    new_w = int(w * scale)
+    new_h = int(h * scale)
+    new_x = max(x - (new_w - w) // 2, 0)
+    new_y = max(y - (new_h - h) // 2, 0)
+    new_w = min(new_w, img_w - new_x)
+    new_h = min(new_h, img_h - new_y)
+    return new_x, new_y, new_w, new_h
 
-# Confidence calculation constants
-IDENTITY_CONFIDENCE_THRESHOLD = float(os.getenv("IDENTITY_CONFIDENCE_THRESHOLD", "0.65"))
-IDENTITY_CONFIDENCE_DECAY = float(os.getenv("IDENTITY_CONFIDENCE_DECAY", "0.05"))
-IDENTITY_CONFIDENCE_MIN = float(os.getenv("IDENTITY_CONFIDENCE_MIN", "0.4"))
-# CRITICAL: Face recognition thresholds - tuned for accuracy
-MIN_CONFIDENCE = float(os.getenv("FACE_MIN_CONFIDENCE", "0.85"))  # Require VERY high confidence (was 0.70)
-MIN_CONFIDENCE_MARGIN = float(os.getenv("FACE_MIN_CONFIDENCE_MARGIN", "0.20"))  # Strong margin between candidates (was 0.10)
-MIN_FACE_SIZE = int(os.getenv("MIN_FACE_SIZE", "80"))  # Larger minimum face size for better quality (was 60)
-BLUR_THRESHOLD = float(os.getenv("BLUR_THRESHOLD", "100.0"))  # Stricter blur detection (was 50.0)
-MAX_FACE_SIZE = int(os.getenv("MAX_FACE_SIZE", "400"))  # Maximum face size to avoid false positives
-MIN_SAMPLES_PER_STUDENT = int(os.getenv("MIN_SAMPLES_PER_STUDENT", "10"))  # Minimum training samples required
-
-# Paths
-# NAMES_FILE = "data/names.pkl"
-# FACES_FILE = "data/faces_data.pkl"
+# --- 4. INITIALIZE MODELS ---
+# Load face detector (Haar Cascade)
 CASCADE_PATH = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
 facedetect = cv2.CascadeClassifier(CASCADE_PATH)
-recent_recognitions: Dict[str, Dict[str, Any]] = {}
+# recent_recognitions: Dict[str, Dict[str, Any]] = {}
+
+# Auto-detect GPU (for Colab) or CPU (for local)
+DEVICE_ID = 0 if torch.cuda.is_available() else 'cpu'
+print(f"Using device: {DEVICE_ID}")
 
 
-def estimate_liveness_score(face_img: np.ndarray) -> float:
-    """Estimate a simple liveness score from a cropped face image.
-    Uses edge variance and contrast heuristics as lightweight spoof detection."""
-    if face_img is None or face_img.size == 0:
-        return 0.0
+# Load Liveness Model
+try:
+    LIVENESS_MODEL_PATH = os.path.join(LIVENESS_REPO_PATH, 'resources', 'anti_spoof_models', '2.7_80x80_MiniFASNetV2.pth')
+    
+    if not os.path.exists(LIVENESS_MODEL_PATH):
+        print(f"FATAL: Liveness model not found at {LIVENESS_MODEL_PATH}")
+        liveness_detector = None
+    else:
+        liveness_detector = AntiSpoofPredict(device_id=DEVICE_ID)
+        print("✅ Liveness Detector loaded.")
+except Exception as e:
+    print(f"❌ Failed to load Liveness Detector: {e}")
+    liveness_detector = None
+
+
+def record_spoof_alert(
+    student_id: Optional[str],
+    student_name: Optional[str],
+    liveness_score: float,
+    reason: str,
+    subject_id: Optional[str] = None,
+    subject_code: Optional[str] = None
+) -> None:
+    """Persist spoof attempts for auditing."""
+    payload = {
+        "subject_id": subject_id,
+        "subject_code": subject_code,
+        "student_id": student_id,
+        "student_name": student_name,
+        "liveness_score": liveness_score,
+        "reason": reason,
+        "created_at": datetime.utcnow().isoformat()
+    }
 
     try:
-        resized = cv2.resize(face_img, (128, 128))
-    except Exception:
-        resized = face_img
-
-    gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
-
-    # Edge density via Laplacian variance
-    laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-    edge_score = min(laplacian_var / max(LIVENESS_EDGE_DIVISOR, 1.0), 1.0)
-
-    # Contrast / texture via standard deviation
-    contrast_score = min(gray.std() / max(LIVENESS_CONTRAST_DIVISOR, 1.0), 1.0)
-    # Combine scores (weighted)
-    combined = (edge_score * 0.6) + (contrast_score * 0.4)
-    return float(max(0.0, min(combined, 1.0)))
+        supabase.table(SPOOF_ALERT_TABLE).insert(payload).execute()
+        print(f"Logged spoof alert: {reason}")
+    except Exception as alert_error:
+        print(f"Warning: failed to record spoof alert: {alert_error}")
 
 
-def recognize_frame(frame_data: str, subject_id: Optional[str] = None, subject_code: Optional[str] = None):
-    """
-    Recognize faces in a base64-encoded image frame
-    """
-    def record_spoof_alert(
-        student_id: Optional[str],
-        student_name: Optional[str],
-        liveness_score: float,
-        reason: str,
-    ) -> None:
-        """Persist spoof attempts for auditing without interrupting the main flow."""
-        payload = {
-            "subject_id": subject_id,
-            "subject_code": subject_code,
-            "student_id": student_id,
-            "student_name": student_name,
-            "liveness_score": liveness_score,
-            "reason": reason,
-            "created_at": datetime.utcnow().isoformat()
-        }
+# def should_confirm_identity(student_id: Optional[str], subject_id: Optional[str], confidence: float) -> bool:
+#     """Require consistent, high-confidence sightings before marking attendance."""
+#     if not student_id:
+#         return False
 
-        try:
-            supabase.table(SPOOF_ALERT_TABLE).insert(payload).execute()
-        except Exception as alert_error:
-            # Log but do not raise ‒ attendance flow should continue
-            print(f"Warning: failed to record spoof alert: {alert_error}")
+#     key_subject = subject_id or "global"
+#     key = f"{student_id}:{key_subject}"
+#     now = time.time()
 
+#     # Drop stale entries
+#     entry = recent_recognitions.get(key)
+#     if entry and now - entry.get("first_seen", now) > IDENTITY_WINDOW_SECONDS:
+#         recent_recognitions.pop(key, None)
+#         entry = None
 
-def should_confirm_identity(student_id: Optional[str], subject_id: Optional[str], confidence: float) -> bool:
-    """Require consistent, high-confidence sightings before marking attendance."""
-    if not student_id:
-        return False
+#     if confidence < IDENTITY_CONFIDENCE_THRESHOLD:
+#         if key in recent_recognitions:
+#             recent_recognitions.pop(key, None)
+#         return False
 
-    key_subject = subject_id or "global"
-    key = f"{student_id}:{key_subject}"
-    now = time.time()
+#     if not entry:
+#         recent_recognitions[key] = {"count": 1, "first_seen": now}
+#         print(f"Identity buffer started for {student_id} (confidence={confidence:.3f})")
+#         return False
 
-    # Drop stale entries
-    entry = recent_recognitions.get(key)
-    if entry and now - entry.get("first_seen", now) > IDENTITY_WINDOW_SECONDS:
-        recent_recognitions.pop(key, None)
-        entry = None
+#     entry["count"] = entry.get("count", 0) + 1
+#     entry["first_seen"] = entry.get("first_seen", now)
+#     recent_recognitions[key] = entry
 
-    if confidence < IDENTITY_CONFIDENCE_THRESHOLD:
-        if key in recent_recognitions:
-            recent_recognitions.pop(key, None)
-        return False
-
-    if not entry:
-        recent_recognitions[key] = {"count": 1, "first_seen": now}
-        print(f"Identity buffer started for {student_id} (confidence={confidence:.3f})")
-        return False
-
-    entry["count"] = entry.get("count", 0) + 1
-    entry["first_seen"] = entry.get("first_seen", now)
-    recent_recognitions[key] = entry
-
-    confirmed = entry["count"] >= IDENTITY_REQUIRED_SIGHTINGS
-    if confirmed:
-        recent_recognitions.pop(key, None)
-        print(f"Identity confirmed for {student_id} after {entry['count']} sightings")
-    else:
-        print(f"Identity buffer for {student_id}: {entry['count']} / {IDENTITY_REQUIRED_SIGHTINGS}")
-    return confirmed
+#     confirmed = entry["count"] >= IDENTITY_REQUIRED_SIGHTINGS
+#     if confirmed:
+#         recent_recognitions.pop(key, None)
+#         print(f"Identity confirmed for {student_id} after {entry['count']} sightings")
+#     else:
+#         print(f"Identity buffer for {student_id}: {entry['count']} / {IDENTITY_REQUIRED_SIGHTINGS}")
+#     return confirmed
 
 # Helper function to upload image to Supabase Storage
 def upload_profile_image(image_data: str, user_id: str, user_type: str = "student") -> str:
@@ -215,8 +241,275 @@ def upload_profile_image(image_data: str, user_id: str, user_type: str = "studen
 def home():
     return {"message": "FastAPI backend running!"}
 
+@app.post("/register-face/")
+async def register_face(student_id: str = Form(...), file: UploadFile = File(...)):
+    """
+    Receives ONE image of a student, verifies it's real (liveness),
+    generates a DeepFace/ArcFace embedding, and stores it in Supabase pgvector.
+    """
+    if liveness_detector is None:
+        raise HTTPException(status_code=500, detail="Liveness detector is not loaded.")
 
+    contents = await file.read()
+    nparr = np.frombuffer(contents, np.uint8)
+    img_np = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img_np is None:
+        raise HTTPException(status_code=400, detail="Invalid image file.")
 
+    try:
+        # Pre-filtering
+        gray = cv2.cvtColor(img_np, cv2.COLOR_BGR2GRAY)
+        faces = facedetect.detectMultiScale(gray, 1.3, 5, minSize=(MIN_FACE_SIZE, MIN_FACE_SIZE))
+        if len(faces) == 0:
+            raise HTTPException(status_code=400, detail="No face detected in image.")
+
+        (x, y, w, h) = faces[0] # Take the first and best face
+        
+        # Expand bbox and crop for liveness detection
+        img_h, img_w = img_np.shape[:2]
+        x2, y2, w2, h2 = expand_bbox(x, y, w, h, scale=1.35, img_w=img_w, img_h=img_h)
+        face_crop_expanded = img_np[y2:y2+h2, x2:x2+w2, :]
+        face_crop_resized = cv2.resize(face_crop_expanded, (80, 80))
+
+        # Liveness Check
+        prediction = liveness_detector.predict(face_crop_resized, LIVENESS_MODEL_PATH)
+        real_score = prediction[0][1] # Probability of "Real"
+
+        if real_score < LIVENESS_THRESHOLD:
+            raise HTTPException(status_code=400, detail=f"Spoof detected. Liveness check failed (Score: {real_score:.2f}). Please use a live, well-lit photo.")
+
+        # Liveness passed, generate embedding
+        face_crop = img_np[y:y+h, x:x+w]
+        embedding = DeepFace.represent(
+            img_path=face_crop, 
+            model_name=FACE_MODEL_NAME, 
+            enforce_detection=False, # We already found the face
+            detector_backend='skip'
+        )[0]["embedding"]
+
+        # Store in Supabase
+        data_to_insert = {"student_id": student_id, "embedding": embedding}
+        response = supabase.table("faces").insert(data_to_insert).execute()
+
+        if response.data:
+            return {"status": "success", "message": f"Face for student {student_id} registered."}
+        else:
+            raise HTTPException(status_code=500, detail=f"Supabase error: {str(response.error)}")
+
+    except Exception as e:
+        return HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+    
+@app.post("/recognize_frame")
+async def recognize_frame(frame: UploadFile = File(...), subject_id: str = Form(None)):
+    """
+    This is the new SOTA pipeline.
+    1. Detects faces
+    2. Runs Liveness Check on each face
+    3. If real, runs ArcFace Recognition
+    4. Matches against `pgvector` database ("match_face" RPC)
+    5. Marks attendance
+    """
+    print(f"\n{'='*60}")
+    print(f"🎥 RECOGNIZE_FRAME ENDPOINT CALLED")
+    print(f"   Frame: {frame.filename if frame else 'None'}")
+    print(f"   Subject ID: {subject_id}")
+    print(f"{'='*60}\n")
+    
+    if liveness_detector is None:
+        print("❌ ERROR: Liveness detector is not loaded!")
+        raise HTTPException(status_code=500, detail="Liveness detector is not loaded.")
+
+    subject_code = None
+    if subject_id:
+        try:
+            subject_resp = supabase.table("subjects").select("code").eq("id", subject_id).execute()
+            if subject_resp.data:
+                subject_code = subject_resp.data[0].get("code")
+        except Exception as e:
+            print(f"Warn: Could not fetch subject code: {e}")
+
+    contents = await frame.read()
+    print(f"📥 Received frame: {len(contents)} bytes")
+    
+    npimg = np.frombuffer(contents, np.uint8)
+    img = cv2.imdecode(npimg, cv2.IMREAD_COLOR)
+    
+    if img is None:
+        print("❌ Failed to decode image")
+        raise HTTPException(status_code=400, detail="Invalid image data")
+    
+    print(f"✅ Image decoded: {img.shape[1]}x{img.shape[0]} pixels")
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    faces_detected = facedetect.detectMultiScale(gray, 1.3, 5, minSize=(MIN_FACE_SIZE, MIN_FACE_SIZE))
+
+    print(f"🔍 Face detection result: {len(faces_detected)} faces detected (minSize={MIN_FACE_SIZE})")
+    
+    if len(faces_detected) == 0:
+        print("❌ No faces detected - trying with more lenient parameters...")
+        # Try again with more lenient parameters
+        faces_detected = facedetect.detectMultiScale(gray, 1.1, 3, minSize=(60, 60))
+        print(f"🔍 Second attempt: {len(faces_detected)} faces detected")
+        
+        if len(faces_detected) == 0:
+            return {"status": "no_face", "faces": [], "message": "No faces detected."}
+
+    results = []
+
+    for (x, y, w, h) in faces_detected:
+        try:
+            # Extract face crop first
+            face_crop = img[y:y+h, x:x+w, :]
+            
+            # --- STAGE 2: PRE-FILTERING (Blur/Size) ---
+            if w > MAX_FACE_SIZE or h > MAX_FACE_SIZE:
+                print(f"Skipping too large face: {w}x{h}")
+                continue
+            
+            # --- STAGE 1: LIVENESS GATEKEEPER (FIXED) ---
+            # Expand bounding box for better liveness detection (SilentFace requirement)
+            img_h, img_w = img.shape[:2]
+            x2, y2, w2, h2 = expand_bbox(x, y, w, h, scale=1.35, img_w=img_w, img_h=img_h)
+            
+            print(f"🔍 Original bbox: [{x}, {y}, {w}, {h}] → Expanded: [{x2}, {y2}, {w2}, {h2}]")
+            
+            # Crop the expanded region for liveness detection
+            face_crop_expanded = img[y2:y2+h2, x2:x2+w2, :]
+            
+            # Resize to 80x80 for MiniFASNet model
+            face_crop_resized = cv2.resize(face_crop_expanded, (80, 80))
+            
+            # Run liveness detection
+            prediction = liveness_detector.predict(face_crop_resized, LIVENESS_MODEL_PATH)
+            real_score = prediction[0][1]  # Probability of "Real" (index 1)
+            
+            print(f"🔍 Liveness score: {real_score:.3f} (threshold: {LIVENESS_THRESHOLD})")
+
+            if real_score < LIVENESS_THRESHOLD:
+                print(f"⛔ SPOOF DETECTED at [{x}, {y}]. Score: {real_score:.3f} < {LIVENESS_THRESHOLD}. Skipping.")
+                results.append({
+                    "name": "SPOOF", 
+                    "liveness_passed": False, 
+                    "x": int(x), "y": int(y), "w": int(w), "h": int(h),
+                    "liveness_score": float(real_score)
+                })
+                record_spoof_alert(
+                    student_id=None, student_name="Unknown (Spoof Attempt)", 
+                    liveness_score=float(real_score), reason="low_liveness_score", 
+                    subject_id=subject_id, subject_code=subject_code
+                )
+                continue
+            
+            print(f"✅ Liveness PASSED at [{x}, {y}]. Score: {real_score:.3f}")
+            
+            gray_crop = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)
+            laplacian_var = cv2.Laplacian(gray_crop, cv2.CV_64F).var()
+            if laplacian_var < BLUR_THRESHOLD:
+                print(f"Skipping blurry face: {laplacian_var:.2f}")
+                continue
+
+            # --- STAGE 3: RECOGNITION (ArcFace) ---
+            print(f"🔍 Starting face recognition...")
+            
+            # Save face crop to temporary file for DeepFace (it requires file path)
+            with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp_file:
+                cv2.imwrite(tmp_file.name, face_crop)
+                temp_path = tmp_file.name
+            
+            try:
+                embedding = DeepFace.represent(
+                    img_path=temp_path, model_name=FACE_MODEL_NAME, 
+                    enforce_detection=False, detector_backend='skip'
+                )[0]["embedding"]
+                print(f"✅ Embedding generated (length: {len(embedding)})")
+            finally:
+                # Clean up temp file
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+
+            # --- STAGE 4: DATABASE MATCH (pgvector) ---
+            print(f"🔍 Searching database for match (threshold: {RECOGNITION_THRESHOLD})...")
+            
+            # Try RPC function first
+            try:
+                match_params = {
+                    "query_embedding": embedding,
+                    "match_threshold": RECOGNITION_THRESHOLD, 
+                    "match_count": 5  # Get top 5 matches for debugging
+                }
+                match_response = supabase.rpc("match_face", match_params).execute()
+                
+                print(f"📊 RPC returned {len(match_response.data) if match_response.data else 0} matches")
+                if match_response.data:
+                    for i, match in enumerate(match_response.data[:3]):
+                        print(f"   Match {i+1}: {match.get('student_name', 'Unknown')} - Similarity: {match.get('similarity', 0):.3f}")
+            except Exception as rpc_error:
+                print(f"⚠️ RPC function failed: {rpc_error}")
+                print(f"🔄 Falling back to direct query...")
+                
+                # Fallback: Get all faces and compute similarity manually
+                faces_response = supabase.table("faces").select("id, student_id, embedding").execute()
+                students_response = supabase.table("students").select("id, name").execute()
+                
+                student_map = {s["id"]: s.get("name", "Unknown") for s in (students_response.data or [])}
+                
+                # Compute cosine similarity manually
+                from numpy.linalg import norm
+                matches = []
+                for face in (faces_response.data or []):
+                    db_embedding = np.array(face["embedding"])
+                    query_embedding = np.array(embedding)
+                    
+                    # Cosine similarity
+                    similarity = np.dot(query_embedding, db_embedding) / (norm(query_embedding) * norm(db_embedding))
+                    
+                    if similarity >= RECOGNITION_THRESHOLD:
+                        matches.append({
+                            "student_id": face["student_id"],
+                            "student_name": student_map.get(face["student_id"], "Unknown"),
+                            "similarity": float(similarity)
+                        })
+                
+                matches.sort(key=lambda x: x["similarity"], reverse=True)
+                match_response.data = matches[:5]
+                
+                print(f"📊 Manual search returned {len(matches)} matches")
+                if matches:
+                    for i, match in enumerate(matches[:3]):
+                        print(f"   Match {i+1}: {match['student_name']} - Similarity: {match['similarity']:.3f}")
+
+            if not match_response.data:
+                print(f"❌ No match found above threshold {RECOGNITION_THRESHOLD}")
+                results.append({"name": "Unknown", "liveness_passed": True, "x": int(x), "y": int(y), "w": int(w), "h": int(h)})
+                continue
+
+            # --- STAGE 5: SUCCESS ---
+            match = match_response.data[0]
+            student_id = match["student_id"]
+            student_name = match["student_name"]
+            similarity = match["similarity"]
+
+            results.append({
+                "name": student_name, "student_id": student_id, "confidence": round(similarity, 3),
+                "x": int(x), "y": int(y), "w": int(w), "h": int(h),
+                "liveness_passed": True
+            })
+            
+            # --- STAGE 6: MARK ATTENDANCE ---
+            print(f"📝 Marking attendance for {student_name} (ID: {student_id})...")
+            result = mark_attendance_if_not_exists(student_id, subject_id=subject_id, conf=similarity)
+            if result.get("status") == "exists":
+                print(f"ℹ️ Attendance already marked for today")
+            else:
+                print(f"✅ Attendance marked successfully!")
+
+        except Exception as e:
+            print(f"❌ Error processing face at [{x}, {y}]: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
+
+    return {"status": "recognized", "faces": results}
 
 
 @app.get("/debug/full_database")
@@ -304,210 +597,6 @@ def debug_specific_table(table_name: str):
         return {"error": str(e), "table_name": table_name}
 
 
-# -------------------------
-# Endpoint: Capture Faces (headless, with error handling)
-# -------------------------
-# @app.post("/capture_faces")
-# def capture_faces(name: str):
-#     try:
-#         # Ensure data folder exists
-#         if not os.path.exists("data"):
-#             os.makedirs("data")
-
-#         # Load face detector
-#         if not os.path.exists(CASCADE_PATH):
-#             raise FileNotFoundError(f"Haarcascade file not found at {CASCADE_PATH}")
-#         facedetect = cv2.CascadeClassifier(CASCADE_PATH)
-
-#         video = cv2.VideoCapture(0)
-#         if not video.isOpened():
-#             raise RuntimeError("Could not open webcam. Is it already in use?")
-
-#         faces_data = []
-#         i = 0
-
-#         while True:
-#             ret, frame = video.read()
-#             if not ret:
-#                 raise RuntimeError("Failed to capture frame from webcam.")
-
-#             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-#             faces = facedetect.detectMultiScale(gray, 1.3, 5)
-#             for (x, y, w, h) in faces:
-#                 crop_img = frame[y:y+h, x:x+w, :]
-#                 resized_img = cv2.resize(crop_img, (50, 50))
-#                 if len(faces_data) < 100 and i % 10 == 0:
-#                     faces_data.append(resized_img)
-#                 i += 1
-
-#             if len(faces_data) >= 100:
-#                 break
-
-#         video.release()
-
-#         faces_np = np.asarray(faces_data)
-
-#         # Get or create student in Supabase
-#         student_id = get_or_create_student_id(name, email=None)
-
-#         # Save faces to Supabase
-#         save_faces_for_student(student_id, faces_np)
-
-
-#         return {"status": "success", "message": f"Faces captured for {name}"}
-
-#     except Exception as e:
-#         import traceback
-#         traceback.print_exc()  # Print full error in terminal
-#         return {"status": "error", "message": str(e)}
-
-
-@app.post("/capture_faces")
-def capture_faces(roll_number: str, name: str, email: str | None = None):
-    try:
-        video = cv2.VideoCapture(0)
-        if not video.isOpened():
-            raise RuntimeError("Could not open webcam. Is it already in use?")
-
-        faces_data = []
-        i = 0
-        quality_rejected = 0
-
-        print(f"Starting face capture for {name} (roll: {roll_number})")
-
-        while True:
-            ret, frame = video.read()
-            if not ret:
-                raise RuntimeError("Failed to capture frame from webcam.")
-
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            faces = facedetect.detectMultiScale(gray, 1.3, 5)
-            
-            for (x, y, w, h) in faces:
-                # Only process every 10th frame
-                if i % 10 != 0:
-                    i += 1
-                    continue
-                
-                # Check face size
-                if w < MIN_FACE_SIZE or h < MIN_FACE_SIZE:
-                    quality_rejected += 1
-                    i += 1
-                    continue
-                
-                crop_img = frame[y:y + h, x:x + w, :]
-                
-                # Check blur
-                gray_crop = cv2.cvtColor(crop_img, cv2.COLOR_BGR2GRAY)
-                laplacian_var = cv2.Laplacian(gray_crop, cv2.CV_64F).var()
-                if laplacian_var < BLUR_THRESHOLD:
-                    quality_rejected += 1
-                    i += 1
-                    continue
-                
-                # CRITICAL: Use SAME preprocessing as recognition for consistency
-                resized_img = cv2.resize(crop_img, (50, 50))
-                
-                # Apply histogram equalization (same as recognition)
-                resized_gray = cv2.cvtColor(resized_img, cv2.COLOR_BGR2GRAY)
-                equalized = cv2.equalizeHist(resized_gray)
-                resized_img_eq = cv2.cvtColor(equalized, cv2.COLOR_GRAY2BGR)
-                
-                # Normalize to 0-1 range
-                normalized_img = resized_img_eq.astype(np.float32) / 255.0
-                
-                # Apply Gaussian blur to reduce noise (same as recognition)
-                normalized_img = cv2.GaussianBlur(normalized_img, (3, 3), 0)
-
-                if len(faces_data) < 100:
-                    faces_data.append(normalized_img.flatten().tolist())
-                    print(f"Captured {len(faces_data)}/100 quality faces (rejected: {quality_rejected})")
-                
-                i += 1
-
-            if len(faces_data) >= 100:
-                break
-
-        video.release()
-
-        # ✅ Ensure user+student exists
-        student_id = get_or_create_student_id(roll_number, name, email)
-        print(f"Captured face for student_id: {student_id}, name: {name}")
-
-        # ✅ Save embeddings into faces table
-        for vector in faces_data:
-            print(f"Saving face {i+1}/{len(faces_data)} for student {student_id}")
-            supabase.table("faces").insert({
-                "student_id": student_id,
-                "vector": vector
-            }).execute()
-
-        return {
-            "status": "success",
-            "message": f"Faces captured for {roll_number} - {name}, linked to student {student_id}"
-        }
-
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return {"status": "error", "message": str(e)}
-
-
-# -------------------------
-# Endpoint: Recognize Faces
-# -------------------------
-@app.post("/recognize_faces")
-def recognize_faces():
-    from sklearn.neighbors import KNeighborsClassifier
-
-    video = cv2.VideoCapture(0)
-    facedetect = cv2.CascadeClassifier(CASCADE_PATH)
-
-    # Load data
-    X, y, id2name = load_training_data()
-    if X is None or y is None:
-        raise HTTPException(status_code=400, detail="No training data found in Supabase")
-
-    # normalize if values look like pixels (0–255)
-    if X.max() > 1.0:
-        X = X / 255.0
-
-    knn = KNeighborsClassifier(n_neighbors=5)
-    knn.fit(X, y)
-
-
-    while True:
-        ret, frame = video.read()
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = facedetect.detectMultiScale(gray, 1.3, 5)
-        for (x, y, w, h) in faces:
-            crop_img = frame[y:y + h, x:x + w, :]
-            resized_img = cv2.resize(crop_img, (50, 50)).flatten().reshape(1, -1)
-            # output = knn.predict(resized_img)
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255), 1)
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (50, 50, 255), 2)
-            cv2.rectangle(frame, (x, y - 40), (x + w, y), (50, 50, 255), -1)
-            # cv2.putText(frame, str(output[0]), (x, y - 15),
-            #             cv2.FONT_HERSHEY_COMPLEX, 1, (255, 255, 255), 1)
-            pred_id = knn.predict(resized_img)[0]  # student_id from Supabase
-            display_name = id2name.get(pred_id, pred_id)
-
-            # Mark attendance in Supabase
-            mark_attendance_if_not_exists(pred_id)
-
-            cv2.putText(frame, display_name, (x, y - 15),
-                        cv2.FONT_HERSHEY_COMPLEX, 1, (255, 255, 255), 1)
-
-
-        cv2.imshow("Frame", frame)
-        k = cv2.waitKey(1)
-        if k == ord('q'):
-            break
-
-    video.release()
-    cv2.destroyAllWindows()
-
-    return {"status": "success", "message": "Recognition session ended"}
 
 # -------------------------
 # Endpoint: Check Low Attendance and Send Email
@@ -546,304 +635,6 @@ def get_attendance_percentage(student_id: str):
         return {"status": "error", "message": "No attendance records"}
     return {"status": "ok", "percentage": pct}
 
-#-------------------------
-# Recognize Frames
-#-------------------------
-@app.post("/recognize_frame")
-async def recognize_frame(frame: UploadFile = File(...), subject_id: str = Form(None)):
-    try:
-        print(f"Received file: {frame.filename}, content_type: {frame.content_type}")
-        print(f"Subject ID: {subject_id}")
-        subject_code = None
-        if subject_id:
-            try:
-                subject_resp = supabase.table("subjects").select("code").eq("id", subject_id).execute()
-                if subject_resp.data:
-                    subject_code = subject_resp.data[0].get("code")
-                print(f"Resolved subject code: {subject_code}")
-            except Exception as subject_fetch_error:
-                print(f"Error fetching subject code for {subject_id}: {subject_fetch_error}")
-
-        # --- Read uploaded frame ---
-        contents = await frame.read()
-        print(f"File size: {len(contents)} bytes")
-        
-        npimg = np.frombuffer(contents, np.uint8)
-        img = cv2.imdecode(npimg, cv2.IMREAD_COLOR)
-
-        if img is None:
-            return {"status": "error", "message": "Invalid image data"}
-
-        # --- Load training data from Supabase ---
-        print("Loading training data from Supabase...")
-        faces_resp = supabase.table("faces").select("student_id, vector").execute()
-        students_resp = supabase.table("students").select("id, name").execute()
-
-        print(f"Faces data: {len(faces_resp.data) if faces_resp.data else 0} records")
-        print(f"Students data: {len(students_resp.data) if students_resp.data else 0} records")
-        
-        # Debug: Print the actual data
-        if faces_resp.data:
-            print("Sample faces data:", faces_resp.data[:2])  # Show first 2 records
-        if students_resp.data:
-            print("Sample students data:", students_resp.data[:2])  # Show first 2 records
-
-        faces_data = []
-        labels = []
-        student_map = {s["id"]: s.get("name") or s.get("full_name") or s["id"] for s in (students_resp.data or [])}
-        print(f"Student map: {student_map}")
-
-        # Only include faces that have valid student names
-        valid_faces = 0
-        invalid_faces = 0
-        for row in (faces_resp.data or []):
-            student_id = row.get("student_id")
-            student_name = student_map.get(student_id)
-            if student_id and student_name:  # Only add if we have a valid student and name
-                faces_data.append(np.array(row["vector"]))
-                labels.append(student_id)
-                valid_faces += 1
-            else:
-                invalid_faces += 1
-                print(f"Invalid face: student_id {row.get('student_id')} not found in student_map")
-        
-        print(f"Valid faces: {valid_faces}, Invalid faces: {invalid_faces}")
-
-        if not faces_data:
-            return {"status": "error", "message": "No training data available - no valid student faces found"}
-
-        # Check if we have enough data for training
-        unique_labels = set(labels)
-        if len(unique_labels) < 2:
-            return {"status": "error", "message": f"Not enough students for training. Found {len(unique_labels)} student(s), need at least 2"}
-
-        X = np.array(faces_data)
-        y = np.array(labels)
-        
-        # Normalize training data to match test data normalization
-        if X.max() > 1.0:
-            print("Normalizing training data (0-1 range)")
-            X = X.astype(np.float32) / 255.0
-        
-        print(f"Training KNN with {len(faces_data)} face samples for {len(unique_labels)} students")
-
-        # IMPROVED: Use optimized KNN with better parameters
-        # Calculate optimal k: sqrt(n) but ensure it's odd and at least 5
-        optimal_k = max(5, min(int(np.sqrt(len(faces_data))), 15))
-        if optimal_k % 2 == 0:
-            optimal_k += 1  # Make it odd to avoid ties
-        
-        # Ensure k doesn't exceed number of samples
-        k_neighbors = min(optimal_k, len(faces_data) - 1)
-        
-        print(f"Using k={k_neighbors} neighbors (optimal for {len(faces_data)} samples)")
-        
-        knn = KNeighborsClassifier(
-            n_neighbors=k_neighbors,
-            weights='distance',  # Weight by inverse distance for better accuracy
-            metric='euclidean',
-            algorithm='ball_tree',  # Faster for high-dimensional data
-            leaf_size=30
-        )
-        knn.fit(X, y)
-        readable_labels = [student_map.get(label, label) for label in unique_labels]
-        print(f"KNN trained successfully with {len(unique_labels)} unique labels: {readable_labels}")
-
-        # --- Detect faces ---
-        print("Detecting faces...")
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        faces = facedetect.detectMultiScale(gray, 1.3, 5)
-        print(f"Detected {len(faces)} faces")
-
-        results = []
-        live_face_count = 0
-        accepted_faces = 0
-        rejection_stats = {"small": 0, "blurry": 0, "low_confidence": 0, "ambiguous": 0}
-        
-        for (x, y, w, h) in faces:
-            try:
-                # Check face size - reject small OR too large faces
-                if w < MIN_FACE_SIZE or h < MIN_FACE_SIZE:
-                    rejection_stats["small"] += 1
-                    print(f"Skipping small face: {w}x{h} (minimum {MIN_FACE_SIZE}x{MIN_FACE_SIZE})")
-                    continue
-                
-                if w > MAX_FACE_SIZE or h > MAX_FACE_SIZE:
-                    rejection_stats["small"] += 1
-                    print(f"Skipping too large face: {w}x{h} (maximum {MAX_FACE_SIZE}x{MAX_FACE_SIZE})")
-                    continue
-                
-                crop_img = img[y:y+h, x:x+w, :]
-                
-                # Check if face is too blurry
-                gray_crop = cv2.cvtColor(crop_img, cv2.COLOR_BGR2GRAY)
-                laplacian_var = cv2.Laplacian(gray_crop, cv2.CV_64F).var()
-                if laplacian_var < BLUR_THRESHOLD:
-                    rejection_stats["blurry"] += 1
-                    print(f"Skipping blurry face: blur score {laplacian_var:.2f} (threshold {BLUR_THRESHOLD})")
-                    continue
-                
-                # IMPROVED: Enhanced preprocessing with histogram equalization
-                resized_img = cv2.resize(crop_img, (50, 50))
-                
-                # Apply histogram equalization for better lighting normalization
-                resized_gray = cv2.cvtColor(resized_img, cv2.COLOR_BGR2GRAY)
-                equalized = cv2.equalizeHist(resized_gray)
-                
-                # Convert back to BGR for consistency with training data
-                resized_img_eq = cv2.cvtColor(equalized, cv2.COLOR_GRAY2BGR)
-                
-                # Normalize pixel values to 0-1 range
-                normalized_img = resized_img_eq.astype(np.float32) / 255.0
-                
-                # Apply Gaussian blur to reduce noise
-                normalized_img = cv2.GaussianBlur(normalized_img, (3, 3), 0)
-                
-                flattened_img = normalized_img.flatten().reshape(1, -1)
-
-                # IMPROVED: Multi-stage confidence validation
-                probabilities = knn.predict_proba(flattened_img)
-                sorted_probs = np.sort(probabilities[0])[::-1]  # Sort descending
-                max_prob = float(sorted_probs[0])
-                second_prob = float(sorted_probs[1]) if len(sorted_probs) > 1 else 0.0
-                third_prob = float(sorted_probs[2]) if len(sorted_probs) > 2 else 0.0
-                
-                # Stage 1: Absolute confidence threshold (STRICT)
-                if max_prob < MIN_CONFIDENCE:
-                    rejection_stats["low_confidence"] += 1
-                    print(
-                        f"❌ Stage 1 FAIL: Low confidence {max_prob:.3f} < {MIN_CONFIDENCE:.3f}"
-                    )
-                    continue
-                
-                # Stage 2: Margin between top 2 predictions (avoid ambiguous matches)
-                confidence_margin = max_prob - second_prob
-                if confidence_margin < MIN_CONFIDENCE_MARGIN:
-                    rejection_stats["ambiguous"] += 1
-                    print(
-                        f"❌ Stage 2 FAIL: Ambiguous margin {confidence_margin:.3f} < {MIN_CONFIDENCE_MARGIN:.3f} "
-                        f"(top2: {max_prob:.3f} vs {second_prob:.3f})"
-                    )
-                    continue
-                
-                # Stage 3: Ensure top prediction is significantly better than 3rd
-                if len(sorted_probs) > 2:
-                    third_margin = max_prob - third_prob
-                    if third_margin < MIN_CONFIDENCE_MARGIN * 1.5:
-                        rejection_stats["ambiguous"] += 1
-                        print(
-                            f"❌ Stage 3 FAIL: Top prediction not dominant enough "
-                            f"(margin to 3rd: {third_margin:.3f})"
-                        )
-                        continue
-                
-                # Stage 4: Check if prediction is consistent (distance-based validation)
-                distances, indices = knn.kneighbors(flattened_img)
-                avg_distance = float(np.mean(distances[0]))
-                max_acceptable_distance = 0.3  # Tune based on your data
-                
-                if avg_distance > max_acceptable_distance:
-                    rejection_stats["low_confidence"] += 1
-                    print(
-                        f"❌ Stage 4 FAIL: Average distance too high {avg_distance:.3f} > {max_acceptable_distance:.3f}"
-                    )
-                    continue
-                
-                print(f"✅ ALL STAGES PASSED: confidence={max_prob:.3f}, margin={confidence_margin:.3f}, avg_dist={avg_distance:.3f}")
-
-                prediction = knn.predict(flattened_img)[0]
-                student_id = prediction
-                student_name = student_map.get(student_id, student_id)
-                print(
-                    f"Predicted: {student_name} (student_id={student_id}) "
-                    f"confidence={max_prob:.2f}, margin={confidence_margin:.2f}"
-                )
-
-                liveness_score = estimate_liveness_score(crop_img)
-                is_live = liveness_score >= LIVENESS_THRESHOLD
-
-                results.append({
-                    "x": int(x),
-                    "y": int(y),
-                    "w": int(w),
-                    "h": int(h),
-                    "name": student_name,
-                    "confidence": round(max_prob, 3),
-                    "student_id": student_id,
-                    "liveness_score": round(liveness_score, 3),
-                    "liveness_passed": is_live
-                })
-
-                if not is_live:
-                    print(f"Liveness check failed for {student_name} (score={liveness_score:.3f})")
-                    record_spoof_alert(
-                        subject_id=subject_id,
-                        subject_code=subject_code,
-                        student_id=student_id,
-                        student_name=student_name,
-                        liveness_score=float(round(liveness_score, 3)),
-                        reason="low_liveness_score"
-                    )
-                    continue
-
-                live_face_count += 1
-
-                # Mark attendance
-                if student_id:
-                    accepted_faces += 1
-                    print(f"Marking attendance for student {student_id}")
-                    attendance_data = {
-                        "student_id": student_id,
-                        "date": str(np.datetime64("today")),
-                        "status": "present",
-                        "marked_at": datetime.utcnow().isoformat()
-                    }
-                    if subject_id:
-                        attendance_data["subject_id"] = subject_id
-                    if subject_code:
-                        attendance_data["subject_code"] = subject_code
-
-                    try:
-                        supabase.table("attendance").insert(attendance_data).execute()
-                    except Exception as insert_error:
-                        # Fallbacks for older schemas
-                        if "subject_code" in str(insert_error):
-                            attendance_data.pop("subject_code", None)
-                            supabase.table("attendance").insert(attendance_data).execute()
-                        elif "marked_at" in str(insert_error):
-                            attendance_data.pop("marked_at", None)
-                            supabase.table("attendance").insert(attendance_data).execute()
-                        else:
-                            raise insert_error
-                else:
-                    print(f"Warning: No student_id found for prediction '{student_name}'")
-            except Exception as e:
-                print(f"Error processing face at ({x}, {y}): {e}")
-                continue
-
-        if not results:
-            print(f"No faces recognized. Rejection stats: {rejection_stats}")
-            return {
-                "status": "no_face",
-                "faces": [],
-                "rejection_stats": rejection_stats,
-                "message": f"Detected {len(faces)} faces but none passed validation"
-            }
-
-        if live_face_count == 0:
-            return {
-                "status": "spoof_detected",
-                "faces": results,
-                "message": "Potential spoof attempt detected; attendance blocked."
-            }
-
-        response = {"status": "recognized", "faces": results}
-        if live_face_count < len(results):
-            response["message"] = "Some faces were blocked by liveness detection."
-        return response
-
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
 
 # -------------------------
 # Student Management Endpoints
@@ -1919,3 +1710,135 @@ def get_student_report(student_id: str):
         import traceback
         traceback.print_exc()
         return {"status": "error", "message": str(e)}
+
+@app.post("/register-face-batch/")
+async def register_face_batch(
+    student_id: str = Form(...), 
+    files: list[UploadFile] = File(...)
+):
+    """
+    Register multiple face samples for a student.
+    Recommended: 5-10 samples with different angles/lighting.
+    """
+    if liveness_detector is None:
+        raise HTTPException(status_code=500, detail="Liveness detector not loaded")
+
+    if len(files) < 3:
+        raise HTTPException(status_code=400, detail="Please upload at least 3 face images")
+
+    if len(files) > 15:
+        raise HTTPException(status_code=400, detail="Maximum 15 images allowed")
+
+    registered_count = 0
+    rejected_count = 0
+    errors = []
+
+    for idx, file in enumerate(files):
+        try:
+            print(f"\n🔍 Processing image {idx+1}: {file.filename}")
+            
+            # Read image
+            contents = await file.read()
+            nparr = np.frombuffer(contents, np.uint8)
+            img_np = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            
+            if img_np is None:
+                rejected_count += 1
+                errors.append(f"Image {idx+1}: Invalid file format")
+                print(f"❌ Image {idx+1}: Invalid file format")
+                continue
+
+            print(f"✅ Image {idx+1}: Loaded successfully ({img_np.shape})")
+
+            # Detect face
+            gray = cv2.cvtColor(img_np, cv2.COLOR_BGR2GRAY)
+            faces = facedetect.detectMultiScale(gray, 1.3, 5, minSize=(MIN_FACE_SIZE, MIN_FACE_SIZE))
+            
+            if len(faces) == 0:
+                rejected_count += 1
+                errors.append(f"Image {idx+1}: No face detected")
+                print(f"❌ Image {idx+1}: No face detected")
+                continue
+
+            (x, y, w, h) = faces[0]  # Take the first face
+            face_crop = img_np[y:y+h, x:x+w]
+            print(f"✅ Image {idx+1}: Face detected ({w}x{h})")
+
+            # Quality checks
+            if w > MAX_FACE_SIZE or h > MAX_FACE_SIZE:
+                rejected_count += 1
+                errors.append(f"Image {idx+1}: Face too large ({w}x{h})")
+                print(f"❌ Image {idx+1}: Face too large ({w}x{h})")
+                continue
+
+            # Blur check
+            gray_crop = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)
+            laplacian_var = cv2.Laplacian(gray_crop, cv2.CV_64F).var()
+            if laplacian_var < BLUR_THRESHOLD:
+                rejected_count += 1
+                errors.append(f"Image {idx+1}: Image too blurry (score: {laplacian_var:.1f})")
+                print(f"❌ Image {idx+1}: Too blurry (score: {laplacian_var:.1f}, threshold: {BLUR_THRESHOLD})")
+                continue
+
+            print(f"✅ Image {idx+1}: Quality checks passed (blur: {laplacian_var:.1f})")
+
+            # Liveness check - MUST resize to 80x80 for MiniFASNet model
+            print(f"🔍 Image {idx+1}: Running liveness detection...")
+            # Resize face crop to 80x80 (required by MiniFASNet)
+            face_crop_resized = cv2.resize(face_crop, (80, 80))
+            prediction = liveness_detector.predict(face_crop_resized, LIVENESS_MODEL_PATH)
+            real_score = prediction[0][1]
+
+            if real_score < LIVENESS_THRESHOLD:
+                rejected_count += 1
+                errors.append(f"Image {idx+1}: Spoof detected (liveness: {real_score:.2f})")
+                print(f"❌ Image {idx+1}: Liveness failed (score: {real_score:.2f}, threshold: {LIVENESS_THRESHOLD})")
+                continue
+
+            print(f"✅ Image {idx+1}: Liveness passed (score: {real_score:.2f})")
+
+            # Generate embedding
+            print(f"🔍 Image {idx+1}: Generating DeepFace embedding...")
+            embedding = DeepFace.represent(
+                img_path=face_crop,
+                model_name=FACE_MODEL_NAME,
+                enforce_detection=False,
+                detector_backend='skip'
+            )[0]["embedding"]
+
+            print(f"✅ Image {idx+1}: Embedding generated (length: {len(embedding)})")
+
+            # Store in database
+            data_to_insert = {
+                "student_id": student_id,
+                "embedding": embedding
+            }
+            response = supabase.table("faces").insert(data_to_insert).execute()
+            
+            if response.data:
+                registered_count += 1
+                print(f"✅ Image {idx+1}: Successfully stored in database")
+            else:
+                rejected_count += 1
+                errors.append(f"Image {idx+1}: Database error")
+                print(f"❌ Image {idx+1}: Database insertion failed")
+
+        except Exception as e:
+            rejected_count += 1
+            errors.append(f"Image {idx+1}: {str(e)}")
+            print(f"❌ Error processing image {idx+1}: {e}")
+            import traceback
+            traceback.print_exc()
+
+    # Determine success status
+    success = registered_count > 0
+    
+    return {
+        "status": "success" if success else "error",
+        "message": f"Registered {registered_count}/{len(files)} face samples",
+        "registered": registered_count,
+        "rejected": rejected_count,
+        "total_uploaded": len(files),
+        "errors": errors if errors else None,
+        "student_id": student_id
+    }

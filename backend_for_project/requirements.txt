@@ -1,9 +1,16 @@
 fastapi
 uvicorn[standard]
-opencv-python
-scikit-learn
+opencv-python-headless
+# scikit-learn
 numpy
 supabase
 python-dotenv
 python-multipart
 httpx
+pyngrok
+
+# --- AI Libraries ---
+deepface
+torch
+torchvision
+PyYAML

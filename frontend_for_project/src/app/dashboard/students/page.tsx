@@ -44,7 +44,7 @@ import {
 } from '@/components/ui/alert-dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { MoreVertical, UserPlus, Edit, Trash2, Ban, Search, MailWarning } from 'lucide-react';
+import { MoreVertical, UserPlus, Edit, Trash2, Ban, Search, MailWarning, Camera } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useToast } from '@/hooks/use-toast';
@@ -60,6 +60,7 @@ import {
   FormLabel,
   FormMessage,
 } from '@/components/ui/form';
+import FaceRegistrationDialog from '@/components/face-registration/FaceRegistrationDialog';
 
 const studentFormSchema = z.object({
   id: z.number().optional(),
@@ -80,6 +81,7 @@ export default function StudentsPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [isAddEditDialogOpen, setAddEditDialogOpen] = useState(false);
   const [isDeleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [isFaceRegistrationOpen, setFaceRegistrationOpen] = useState(false);
   const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const router = useRouter();
@@ -208,6 +210,20 @@ export default function StudentsPage() {
   const openDeleteDialog = (student: Student) => {
     setSelectedStudent(student);
     setDeleteDialogOpen(true);
+  };
+
+  const openFaceRegistration = (student: Student) => {
+    setSelectedStudent(student);
+    setFaceRegistrationOpen(true);
+  };
+
+  const handleFaceRegistrationSuccess = (result: any) => {
+    toast({
+      title: 'Face Registration Successful!',
+      description: `Registered ${result.registered} face samples for ${selectedStudent?.name}`,
+    });
+    setFaceRegistrationOpen(false);
+    setSelectedStudent(null);
   };
 
   const handleDeleteStudent = async () => {
@@ -527,6 +543,10 @@ export default function StudentsPage() {
                             <Edit className="mr-2 h-4 w-4" />
                             Edit
                           </DropdownMenuItem>
+                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); openFaceRegistration(student); }}>
+                            <Camera className="mr-2 h-4 w-4 text-blue-500" />
+                            Register Face
+                          </DropdownMenuItem>
                           <DropdownMenuItem onClick={(e) => { e.stopPropagation(); toggleBlockStudent(student.id)}}>
                             <Ban className="mr-2 h-4 w-4" />
                             {student.status === 'blocked' ? 'Unblock' : 'Block'}
@@ -576,6 +596,24 @@ export default function StudentsPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Face Registration Dialog */}
+      {selectedStudent && (
+        <FaceRegistrationDialog
+          isOpen={isFaceRegistrationOpen}
+          onClose={() => {
+            setFaceRegistrationOpen(false);
+            setSelectedStudent(null);
+          }}
+          student={{
+            id: selectedStudent.uuid || selectedStudent.id?.toString() || '',
+            name: selectedStudent.name,
+            email: selectedStudent.email,
+            studentId: selectedStudent.studentId
+          }}
+          onSuccess={handleFaceRegistrationSuccess}
+        />
+      )}
     </div>
   );
 }

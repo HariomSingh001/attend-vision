@@ -235,21 +235,33 @@ def load_training_data():
     return X, y, id2name
 
 # ---------- Attendance ----------
-def mark_attendance_if_not_exists(student_id: str, class_id: str = None, conf: float = None):
+def mark_attendance_if_not_exists(student_id: str, class_id: str = None, conf: float = None, subject_id: str = None):
     """Insert attendance for today only if not already present."""
     today = date.today().isoformat()
     q = supabase.table("attendance").select("*")\
         .eq("student_id", student_id).eq("date", today)
-    if class_id:
+    
+    # Check by subject_id if provided, otherwise class_id
+    if subject_id:
+        q = q.eq("subject_id", subject_id)
+    elif class_id:
         q = q.eq("class_id", class_id)
+    
     chk = q.execute()
     if chk.data and len(chk.data) > 0:
         return {"status": "exists"}
+    
     payload = {"student_id": student_id, "date": today, "status": "present"}
-    if class_id:
+    
+    # Use subject_id if provided (preferred), otherwise class_id
+    if subject_id:
+        payload["subject_id"] = subject_id
+    elif class_id:
         payload["class_id"] = class_id
+    
     if conf is not None:
         payload["confidence"] = float(conf)
+    
     res = supabase.table("attendance").insert(payload).execute()
     return res
 
