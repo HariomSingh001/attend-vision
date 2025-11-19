@@ -242,10 +242,18 @@ def home():
     return {"message": "FastAPI backend running!"}
 
 @app.post("/register-face/")
-async def register_face(student_id: str = Form(...), file: UploadFile = File(...)):
+async def register_face(
+    student_id: str = Form(...), 
+    file: UploadFile = File(...),
+    skip_liveness: bool = Form(True)  # Skip liveness for registration by default
+):
     """
-    Receives ONE image of a student, verifies it's real (liveness),
+    Receives ONE image of a student, optionally verifies it's real (liveness),
     generates a DeepFace/ArcFace embedding, and stores it in Supabase pgvector.
+    
+    Args:
+        skip_liveness: If True, skips liveness detection (recommended for uploaded photos).
+                      Set to False only if registering from live camera feed.
     """
     if liveness_detector is None:
         raise HTTPException(status_code=500, detail="Liveness detector is not loaded.")
@@ -271,12 +279,16 @@ async def register_face(student_id: str = Form(...), file: UploadFile = File(...
         face_crop_expanded = img_np[y2:y2+h2, x2:x2+w2, :]
         face_crop_resized = cv2.resize(face_crop_expanded, (80, 80))
 
-        # Liveness Check
-        prediction = liveness_detector.predict(face_crop_resized, LIVENESS_MODEL_PATH)
-        real_score = prediction[0][1] # Probability of "Real"
+        # Liveness Check (optional for registration)
+        if not skip_liveness:
+            prediction = liveness_detector.predict(face_crop_resized, LIVENESS_MODEL_PATH)
+            real_score = prediction[0][1] # Probability of "Real"
 
-        if real_score < LIVENESS_THRESHOLD:
-            raise HTTPException(status_code=400, detail=f"Spoof detected. Liveness check failed (Score: {real_score:.2f}). Please use a live, well-lit photo.")
+            if real_score < LIVENESS_THRESHOLD:
+                raise HTTPException(status_code=400, detail=f"Spoof detected. Liveness check failed (Score: {real_score:.2f}). Please use a live, well-lit photo.")
+            print(f"✅ Liveness passed (score: {real_score:.2f})")
+        else:
+            print(f"⏭️ Liveness check skipped (registration mode)")
 
         # Liveness passed, generate embedding
         face_crop = img_np[y:y+h, x:x+w]
@@ -1714,11 +1726,16 @@ def get_student_report(student_id: str):
 @app.post("/register-face-batch/")
 async def register_face_batch(
     student_id: str = Form(...), 
-    files: list[UploadFile] = File(...)
+    files: list[UploadFile] = File(...),
+    skip_liveness: bool = Form(True)  # Skip liveness for registration by default
 ):
     """
     Register multiple face samples for a student.
     Recommended: 5-10 samples with different angles/lighting.
+    
+    Args:
+        skip_liveness: If True, skips liveness detection (recommended for registration).
+                      Set to False only if registering from live camera feed.
     """
     if liveness_detector is None:
         raise HTTPException(status_code=500, detail="Liveness detector not loaded")
@@ -1782,20 +1799,23 @@ async def register_face_batch(
 
             print(f"✅ Image {idx+1}: Quality checks passed (blur: {laplacian_var:.1f})")
 
-            # Liveness check - MUST resize to 80x80 for MiniFASNet model
-            print(f"🔍 Image {idx+1}: Running liveness detection...")
-            # Resize face crop to 80x80 (required by MiniFASNet)
-            face_crop_resized = cv2.resize(face_crop, (80, 80))
-            prediction = liveness_detector.predict(face_crop_resized, LIVENESS_MODEL_PATH)
-            real_score = prediction[0][1]
+            # Liveness check - OPTIONAL for registration (static photos)
+            if not skip_liveness:
+                print(f"🔍 Image {idx+1}: Running liveness detection...")
+                # Resize face crop to 80x80 (required by MiniFASNet)
+                face_crop_resized = cv2.resize(face_crop, (80, 80))
+                prediction = liveness_detector.predict(face_crop_resized, LIVENESS_MODEL_PATH)
+                real_score = prediction[0][1]
 
-            if real_score < LIVENESS_THRESHOLD:
-                rejected_count += 1
-                errors.append(f"Image {idx+1}: Spoof detected (liveness: {real_score:.2f})")
-                print(f"❌ Image {idx+1}: Liveness failed (score: {real_score:.2f}, threshold: {LIVENESS_THRESHOLD})")
-                continue
+                if real_score < LIVENESS_THRESHOLD:
+                    rejected_count += 1
+                    errors.append(f"Image {idx+1}: Spoof detected (liveness: {real_score:.2f})")
+                    print(f"❌ Image {idx+1}: Liveness failed (score: {real_score:.2f}, threshold: {LIVENESS_THRESHOLD})")
+                    continue
 
-            print(f"✅ Image {idx+1}: Liveness passed (score: {real_score:.2f})")
+                print(f"✅ Image {idx+1}: Liveness passed (score: {real_score:.2f})")
+            else:
+                print(f"⏭️ Image {idx+1}: Liveness check skipped (registration mode)")
 
             # Generate embedding
             print(f"🔍 Image {idx+1}: Generating DeepFace embedding...")
