@@ -32,8 +32,9 @@ from fastapi.middleware.cors import CORSMiddleware
 app = FastAPI()
 origins = [
     "http://localhost:3000",   # Next.js default dev server
-    "http://localhost:9002",   # Firebase/other local port you’re running on
-    "https://yourdomain.com",  # your production frontend domain (add later when deployed)
+    "http://localhost:9002",   # Firebase/other local port
+    "https://yourdomain.com",  # Replace with your Vercel domain after deployment
+    "*"  # Allow all origins for testing (remove in production for security)
 ]
 
 app.add_middleware(
@@ -65,11 +66,14 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --- 2. SETUP LIVENESS MODEL (SilentFace) ---
 LIVENESS_REPO_PATH = 'anti_spoofing'
-sys.path.append(LIVENESS_REPO_PATH)
+# Add both anti_spoofing and anti_spoofing/src to path for relative imports
+sys.path.insert(0, LIVENESS_REPO_PATH)
+sys.path.insert(0, os.path.join(LIVENESS_REPO_PATH, 'src'))
 try:
-    from anti_spoofing.src.anti_spoof_predict import AntiSpoofPredict
-except ImportError:
+    from src.anti_spoof_predict import AntiSpoofPredict
+except ImportError as e:
     print(f"Error: Could not import AntiSpoofPredict. Check path: {LIVENESS_REPO_PATH}")
+    print(f"Import error details: {e}")
     sys.exit(1)
 
 print("Loading models, please wait...")

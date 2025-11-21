@@ -4,6 +4,7 @@
 import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from '@/components/ui/button';
+import { isAdmin } from '@/lib/auth';
 import {
   Table,
   TableBody,
@@ -430,11 +431,15 @@ export default function TeachersPage() {
                             <Repeat className="mr-2 h-4 w-4" />
                             Change Status
                         </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem className="text-red-500" onClick={() => openDeleteDialog(teacher)}>
-                          <Trash2 className="mr-2 h-4 w-4" />
-                          Remove
-                        </DropdownMenuItem>
+                        {isAdmin() && (
+                          <>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem className="text-red-500" onClick={() => openDeleteDialog(teacher)}>
+                              <Trash2 className="mr-2 h-4 w-4" />
+                              Remove
+                            </DropdownMenuItem>
+                          </>
+                        )}
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </TableCell>

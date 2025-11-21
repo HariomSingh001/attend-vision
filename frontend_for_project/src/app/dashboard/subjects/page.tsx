@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { useToast } from '@/hooks/use-toast';
 import { formatSubjectsForDisplay, SubjectDisplay, ApiSubject } from '@/lib/subjects';
 import { LoadingScreen } from '@/components/ui/loading-screen';
+import { isAdmin } from '@/lib/auth';
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
 
@@ -180,26 +181,30 @@ export default function SubjectsPage() {
                         <p className="mt-2 text-xs text-muted-foreground">Code: {subject.code}</p>
                       )}
                       <div className="mt-4 flex justify-end gap-2">
-                        <Button 
-                          variant="outline" 
-                          size="icon"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            handleEditSubject(subject);
-                          }}
-                        >
-                          <Edit className="h-4 w-4" />
-                        </Button>
-                        <Button 
-                          variant="outline" 
-                          size="icon"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            handleDeleteSubject(subject.id);
-                          }}
-                        >
-                          <Trash className="h-4 w-4 text-red-500" />
-                        </Button>
+                        {isAdmin() && (
+                          <>
+                            <Button 
+                              variant="outline" 
+                              size="icon"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                handleEditSubject(subject);
+                              }}
+                            >
+                              <Edit className="h-4 w-4" />
+                            </Button>
+                            <Button 
+                              variant="outline" 
+                              size="icon"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                handleDeleteSubject(subject.id);
+                              }}
+                            >
+                              <Trash className="h-4 w-4 text-red-500" />
+                            </Button>
+                          </>
+                        )}
                       </div>
                     </CardContent>
                   </Card>

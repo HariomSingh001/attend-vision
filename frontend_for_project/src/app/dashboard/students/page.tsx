@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import type { Student } from '@/lib/data';
 import { studentApi, convertApiStudentToFrontend } from '@/lib/api';
+import { isAdmin } from '@/lib/auth';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from '@/components/ui/button';
 import {
@@ -555,11 +556,15 @@ export default function StudentsPage() {
                             <MailWarning className="mr-2 h-4 w-4 text-yellow-500" />
                             Send Alert
                           </DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem className="text-red-500" onClick={(e) => { e.stopPropagation(); openDeleteDialog(student)}}>
-                            <Trash2 className="mr-2 h-4 w-4" />
-                            Remove
-                          </DropdownMenuItem>
+                          {isAdmin() && (
+                            <>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem className="text-red-500" onClick={(e) => { e.stopPropagation(); openDeleteDialog(student)}}>
+                                <Trash2 className="mr-2 h-4 w-4" />
+                                Remove
+                              </DropdownMenuItem>
+                            </>
+                          )}
                         </DropdownMenuContent>
                       </DropdownMenu>
                     </TableCell>
