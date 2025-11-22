@@ -128,6 +128,15 @@ export default function TeachersPage() {
   }, [searchQuery, teachers]);
 
   const onSubmit = async (data: TeacherFormData) => {
+    if (!isAdmin()) {
+      toast({
+        variant: 'destructive',
+        title: 'Access Denied',
+        description: 'Only admins can add or edit teachers.',
+      });
+      return;
+    }
+    
     try {
       if (data.id) {
         // Update existing teacher
@@ -215,6 +224,15 @@ export default function TeachersPage() {
   };
 
   const toggleTeacherStatus = (teacherId: number) => {
+    if (!isAdmin()) {
+      toast({
+        variant: 'destructive',
+        title: 'Access Denied',
+        description: 'Only admins can change teacher status.',
+      });
+      return;
+    }
+    
     setTeachers(teachers.map(t => {
       if (t.id === teacherId) {
         const newStatus = t.status === 'active' ? 'on-leave' : 'active';
@@ -254,6 +272,7 @@ export default function TeachersPage() {
                     onChange={(e) => setSearchQuery(e.target.value)}
                   />
                 </div>
+                {isAdmin() && (
                 <Dialog open={isAddEditDialogOpen} onOpenChange={(isOpen) => {
                   if (!isOpen) form.reset();
                   setAddEditDialogOpen(isOpen);
@@ -372,6 +391,7 @@ export default function TeachersPage() {
                         </Form>
                     </DialogContent>
                 </Dialog>
+                )}
               </div>
           </div>
         </CardHeader>
@@ -423,14 +443,18 @@ export default function TeachersPage() {
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
-                        <DropdownMenuItem onClick={() => openEditDialog(teacher)}>
-                          <Edit className="mr-2 h-4 w-4" />
-                          Edit
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => toggleTeacherStatus(teacher.id)}>
-                            <Repeat className="mr-2 h-4 w-4" />
-                            Change Status
-                        </DropdownMenuItem>
+                        {isAdmin() && (
+                          <>
+                            <DropdownMenuItem onClick={() => openEditDialog(teacher)}>
+                              <Edit className="mr-2 h-4 w-4" />
+                              Edit
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => toggleTeacherStatus(teacher.id)}>
+                                <Repeat className="mr-2 h-4 w-4" />
+                                Change Status
+                            </DropdownMenuItem>
+                          </>
+                        )}
                         {isAdmin() && (
                           <>
                             <DropdownMenuSeparator />

@@ -135,6 +135,14 @@ export default function StudentsPage() {
   };
 
   const onSubmit = async (data: StudentFormData) => {
+    if (!isAdmin()) {
+      toast({
+        variant: 'destructive',
+        title: 'Access Denied',
+        description: 'Only admins can add or edit students.',
+      });
+      return;
+    }
     const studentName = `${data.firstName} ${data.lastName}`.trim();
     try {
       if (data.id) {
@@ -251,6 +259,15 @@ export default function StudentsPage() {
   };
 
   const handleSendAlert = async (student: Student) => {
+    if (!isAdmin()) {
+      toast({
+        variant: 'destructive',
+        title: 'Access Denied',
+        description: 'Only admins can send alerts.',
+      });
+      return;
+    }
+    
     if (!student.uuid) {
       toast({
         variant: 'destructive',
@@ -285,6 +302,15 @@ export default function StudentsPage() {
   };
 
   const toggleBlockStudent = async (studentId: number) => {
+    if (!isAdmin()) {
+      toast({
+        variant: 'destructive',
+        title: 'Access Denied',
+        description: 'Only admins can block/unblock students.',
+      });
+      return;
+    }
+    
     const student = students.find(s => s.id === studentId);
     if (student?.uuid) {
       try {
@@ -344,17 +370,18 @@ export default function StudentsPage() {
                   onChange={(e) => setSearchQuery(e.target.value)}
                 />
               </div>
-              <Dialog open={isAddEditDialogOpen} onOpenChange={(isOpen) => {
-                setAddEditDialogOpen(isOpen);
-                if (!isOpen) {
-                  form.reset();
-                }
-              }}>
-                <DialogTrigger asChild>
-                  <Button onClick={openAddDialog}>
-                    <UserPlus className="mr-2" /> Add Student
-                  </Button>
-                </DialogTrigger>
+              {isAdmin() && (
+                <Dialog open={isAddEditDialogOpen} onOpenChange={(isOpen) => {
+                  setAddEditDialogOpen(isOpen);
+                  if (!isOpen) {
+                    form.reset();
+                  }
+                }}>
+                  <DialogTrigger asChild>
+                    <Button onClick={openAddDialog}>
+                      <UserPlus className="mr-2" /> Add Student
+                    </Button>
+                  </DialogTrigger>
                 <DialogContent className="sm:max-w-2xl">
                   <DialogHeader>
                     <DialogTitle>{form.getValues('id') ? 'Edit Student' : 'Add New Student'}</DialogTitle>
@@ -484,7 +511,8 @@ export default function StudentsPage() {
                     </form>
                   </Form>
                 </DialogContent>
-              </Dialog>
+                </Dialog>
+              )}
             </div>
           </div>
         </CardHeader>
@@ -540,22 +568,28 @@ export default function StudentsPage() {
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
-                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); openEditDialog(student); }}>
-                            <Edit className="mr-2 h-4 w-4" />
-                            Edit
-                          </DropdownMenuItem>
+                          {isAdmin() && (
+                            <DropdownMenuItem onClick={(e) => { e.stopPropagation(); openEditDialog(student); }}>
+                              <Edit className="mr-2 h-4 w-4" />
+                              Edit
+                            </DropdownMenuItem>
+                          )}
                           <DropdownMenuItem onClick={(e) => { e.stopPropagation(); openFaceRegistration(student); }}>
                             <Camera className="mr-2 h-4 w-4 text-blue-500" />
                             Register Face
                           </DropdownMenuItem>
-                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); toggleBlockStudent(student.id)}}>
-                            <Ban className="mr-2 h-4 w-4" />
-                            {student.status === 'blocked' ? 'Unblock' : 'Block'}
-                          </DropdownMenuItem>
-                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleSendAlert(student); }}>
-                            <MailWarning className="mr-2 h-4 w-4 text-yellow-500" />
-                            Send Alert
-                          </DropdownMenuItem>
+                          {isAdmin() && (
+                            <>
+                              <DropdownMenuItem onClick={(e) => { e.stopPropagation(); toggleBlockStudent(student.id)}}>
+                                <Ban className="mr-2 h-4 w-4" />
+                                {student.status === 'blocked' ? 'Unblock' : 'Block'}
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleSendAlert(student); }}>
+                                <MailWarning className="mr-2 h-4 w-4 text-yellow-500" />
+                                Send Alert
+                              </DropdownMenuItem>
+                            </>
+                          )}
                           {isAdmin() && (
                             <>
                               <DropdownMenuSeparator />
