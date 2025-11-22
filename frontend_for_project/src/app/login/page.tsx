@@ -10,14 +10,14 @@ export default function LoginPage() {
   const handleLogin = () => {
     // Simple password check - change this to your preferred password
     if (password === "attendvision2025") {
-      // Set authentication cookie
-      document.cookie = "authenticated=true; path=/; max-age=86400"; // 24 hours
-      document.cookie = "userRole=tester; path=/; max-age=86400"; // Default role
+      // Set authentication cookie (session cookie - expires when browser closes)
+      document.cookie = "authenticated=true; path=/"; // No max-age = session cookie
+      document.cookie = "userRole=tester; path=/"; // Default role
       router.push("/dashboard");
     } else if (password === "admin@attendvision") {
-      // Admin access
-      document.cookie = "authenticated=true; path=/; max-age=86400";
-      document.cookie = "userRole=admin; path=/; max-age=86400";
+      // Admin access (session cookie - expires when browser closes)
+      document.cookie = "authenticated=true; path=/";
+      document.cookie = "userRole=admin; path=/";
       router.push("/dashboard");
     } else {
       setError("Invalid access code. Please try again.");

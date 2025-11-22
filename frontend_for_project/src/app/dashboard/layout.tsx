@@ -151,7 +151,14 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 </DropdownMenuPortal>
               </DropdownMenuSub>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => logout()}>
+              <DropdownMenuItem onClick={() => {
+                // Clear all cookies
+                document.cookie.split(";").forEach((c) => {
+                  document.cookie = c.replace(/^ +/, "").replace(/=.*/, `=;expires=${new Date().toUTCString()};path=/`);
+                });
+                // Redirect to login
+                window.location.href = '/login';
+              }}>
                 <LogOut className="mr-2 h-4 w-4" />
                 <span>Log out</span>
               </DropdownMenuItem>
