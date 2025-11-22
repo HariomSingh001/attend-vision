@@ -5,26 +5,35 @@ export function middleware(request: NextRequest) {
   // Check if user is authenticated
   const authenticated = request.cookies.get('authenticated');
   
-  // Allow access to login page and public routes
-  if (request.nextUrl.pathname.startsWith('/login') || 
-      request.nextUrl.pathname === '/' ||
-      request.nextUrl.pathname.startsWith('/_next') ||
-      request.nextUrl.pathname.startsWith('/api')) {
+  // Allow access to public routes (no auth required)
+  const publicRoutes = [
+    '/login',
+    '/signup',
+    '/forgot-password',
+    '/_next',
+    '/api',
+  ];
+  
+  const isPublicRoute = publicRoutes.some(route => 
+    request.nextUrl.pathname.startsWith(route)
+  );
+  
+  // If it's a public route, allow access
+  if (isPublicRoute) {
     return NextResponse.next();
   }
   
-  // Redirect to login if not authenticated
-  if (!authenticated) {
-    return NextResponse.redirect(new URL('/login', request.url));
+  // If user is authenticated, allow access to protected routes
+  if (authenticated) {
+    return NextResponse.next();
   }
   
-  return NextResponse.next();
+  // Redirect to login if not authenticated and trying to access protected route
+  return NextResponse.redirect(new URL('/login', request.url));
 }
 
 export const config = {
   matcher: [
-    '/dashboard/:path*',
-    '/subjects/:path*',
-    '/students/:path*',
+    '/((?!_next/static|_next/image|favicon.ico).*)',
   ],
 };

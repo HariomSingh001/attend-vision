@@ -123,15 +123,28 @@ print(f"Using device: {DEVICE_ID}")
 # Load Liveness Model
 try:
     LIVENESS_MODEL_PATH = os.path.join(LIVENESS_REPO_PATH, 'resources', 'anti_spoof_models', '2.7_80x80_MiniFASNetV2.pth')
+    print(f"🔍 Looking for liveness model at: {LIVENESS_MODEL_PATH}")
+    print(f"🔍 Current working directory: {os.getcwd()}")
+    print(f"🔍 Files in current directory: {os.listdir('.')}")
     
     if not os.path.exists(LIVENESS_MODEL_PATH):
-        print(f"FATAL: Liveness model not found at {LIVENESS_MODEL_PATH}")
+        print(f"❌ FATAL: Liveness model not found at {LIVENESS_MODEL_PATH}")
+        if os.path.exists(LIVENESS_REPO_PATH):
+            print(f"✅ anti_spoofing folder exists")
+            print(f"📁 Contents: {os.listdir(LIVENESS_REPO_PATH)}")
+        else:
+            print(f"❌ anti_spoofing folder does NOT exist!")
         liveness_detector = None
     else:
+        print(f"✅ Model file found! Size: {os.path.getsize(LIVENESS_MODEL_PATH)} bytes")
+        print(f"🔄 Initializing AntiSpoofPredict...")
         liveness_detector = AntiSpoofPredict(device_id=DEVICE_ID)
-        print("✅ Liveness Detector loaded.")
+        print("✅ Liveness Detector loaded successfully!")
 except Exception as e:
     print(f"❌ Failed to load Liveness Detector: {e}")
+    print(f"❌ Exception type: {type(e).__name__}")
+    import traceback
+    print(f"❌ Traceback: {traceback.format_exc()}")
     liveness_detector = None
 
 
