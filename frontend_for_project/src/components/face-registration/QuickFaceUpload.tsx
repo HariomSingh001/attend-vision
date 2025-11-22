@@ -184,7 +184,8 @@ export default function QuickFaceUpload({ studentId, studentName, onSuccess, onC
         })
       }, 300)
 
-      const response = await fetch('http://localhost:8000/register-face-batch/', {
+      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000'
+      const response = await fetch(`${backendUrl}/register-face-batch/`, {
         method: 'POST',
         body: formData
       })
