@@ -39,6 +39,7 @@ import { usePathname } from 'next/navigation';
 import { teacherInfo } from '@/lib/data';
 import { useTheme } from 'next-themes';
 import { cn } from '@/lib/utils';
+import { logout } from '@/lib/auth';
 
 function Brand() {
     const { open } = useSidebar();
@@ -150,11 +151,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 </DropdownMenuPortal>
               </DropdownMenuSub>
               <DropdownMenuSeparator />
-              <DropdownMenuItem asChild>
-                <Link href="/">
-                  <LogOut className="mr-2 h-4 w-4" />
-                  <span>Log out</span>
-                </Link>
+              <DropdownMenuItem onClick={() => logout()}>
+                <LogOut className="mr-2 h-4 w-4" />
+                <span>Log out</span>
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
