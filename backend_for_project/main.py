@@ -98,6 +98,84 @@ LIVENESS_THRESHOLD = 0.5      # 50% - Balanced threshold for real webcam feeds (
 
 SPOOF_ALERT_TABLE = os.getenv("SPOOF_ALERT_TABLE", "attendance_alerts")
 
+# --- IMAGE ENHANCEMENT FUNCTIONS ---
+def enhance_image_lighting(image: np.ndarray) -> np.ndarray:
+    """
+    Enhance image lighting using CLAHE (Contrast Limited Adaptive Histogram Equalization)
+    This improves recognition accuracy under poor lighting conditions.
+    
+    Args:
+        image: BGR image from OpenCV
+    
+    Returns:
+        Enhanced BGR image
+    """
+    try:
+        # Convert to LAB color space (L: lightness, A: green-red, B: blue-yellow)
+        lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+        
+        # Split channels
+        l, a, b = cv2.split(lab)
+        
+        # Apply CLAHE to L channel only (preserves color)
+        # clipLimit: Threshold for contrast limiting (higher = more contrast)
+        # tileGridSize: Size of grid for histogram equalization (smaller = more local)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        l_enhanced = clahe.apply(l)
+        
+        # Merge channels back
+        lab_enhanced = cv2.merge([l_enhanced, a, b])
+        
+        # Convert back to BGR
+        enhanced = cv2.cvtColor(lab_enhanced, cv2.COLOR_LAB2BGR)
+        
+        return enhanced
+    except Exception as e:
+        print(f"⚠️ CLAHE enhancement failed: {e}. Using original image.")
+        return image
+
+def analyze_lighting_quality(image: np.ndarray) -> dict:
+    """
+    Analyze image lighting quality to determine if enhancement is needed.
+    
+    Args:
+        image: BGR image from OpenCV
+    
+    Returns:
+        Dictionary with lighting metrics and recommendations
+    """
+    try:
+        # Convert to grayscale for analysis
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        
+        # Calculate statistics
+        mean_brightness = np.mean(gray)
+        std_brightness = np.std(gray)
+        
+        # Check for under/over exposure
+        is_too_dark = mean_brightness < 80
+        is_too_bright = mean_brightness > 200
+        is_low_contrast = std_brightness < 30
+        
+        return {
+            "mean_brightness": float(mean_brightness),
+            "std_brightness": float(std_brightness),
+            "is_too_dark": is_too_dark,
+            "is_too_bright": is_too_bright,
+            "is_low_contrast": is_low_contrast,
+            "needs_enhancement": is_too_dark or is_too_bright or is_low_contrast
+        }
+    except Exception as e:
+        print(f"⚠️ Lighting analysis failed: {e}")
+        return {
+            "mean_brightness": 128.0,
+            "std_brightness": 50.0,
+            "is_too_dark": False,
+            "is_too_bright": False,
+            "is_low_contrast": False,
+            "needs_enhancement": False
+        }
+
 # --- 3. HELPER FUNCTIONS ---
 def expand_bbox(x, y, w, h, scale=1.3, img_w=0, img_h=0):
     """Expand bounding box by scale factor for better liveness detection"""
@@ -368,6 +446,21 @@ async def recognize_frame(frame: UploadFile = File(...), subject_id: str = Form(
         raise HTTPException(status_code=400, detail="Invalid image data")
     
     print(f"✅ Image decoded: {img.shape[1]}x{img.shape[0]} pixels")
+    
+    # --- LIGHTING ENHANCEMENT ---
+    lighting_info = analyze_lighting_quality(img)
+    print(f"💡 Lighting analysis:")
+    print(f"   Mean brightness: {lighting_info['mean_brightness']:.1f}")
+    print(f"   Std brightness: {lighting_info['std_brightness']:.1f}")
+    print(f"   Too dark: {lighting_info['is_too_dark']}")
+    print(f"   Too bright: {lighting_info['is_too_bright']}")
+    print(f"   Low contrast: {lighting_info['is_low_contrast']}")
+    print(f"   Needs enhancement: {lighting_info['needs_enhancement']}")
+    
+    if lighting_info['needs_enhancement']:
+        print("⚡ Applying CLAHE enhancement...")
+        img = enhance_image_lighting(img)
+        print("✅ Image enhanced")
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     faces_detected = facedetect.detectMultiScale(gray, 1.3, 5, minSize=(MIN_FACE_SIZE, MIN_FACE_SIZE))
@@ -1783,6 +1876,15 @@ async def register_face_batch(
                 continue
 
             print(f"✅ Image {idx+1}: Loaded successfully ({img_np.shape})")
+
+            # --- LIGHTING ENHANCEMENT ---
+            lighting_info = analyze_lighting_quality(img_np)
+            print(f"💡 Image {idx+1} lighting: brightness={lighting_info['mean_brightness']:.1f}, needs_enhancement={lighting_info['needs_enhancement']}")
+            
+            if lighting_info['needs_enhancement']:
+                print(f"⚡ Image {idx+1}: Applying CLAHE enhancement...")
+                img_np = enhance_image_lighting(img_np)
+                print(f"✅ Image {idx+1}: Enhanced")
 
             # Detect face
             gray = cv2.cvtColor(img_np, cv2.COLOR_BGR2GRAY)
