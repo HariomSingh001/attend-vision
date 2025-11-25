@@ -33,8 +33,8 @@ export const studentsData: Student[] = [
 ];
 
 export const teacherInfo = {
-  name: 'Dr. Evelyn Reed',
-  subject: 'Computer Science',
+  name: 'Admin',
+  subject: 'Administrator',
   class: 'CS101 - Introduction to Programming',
 };
 

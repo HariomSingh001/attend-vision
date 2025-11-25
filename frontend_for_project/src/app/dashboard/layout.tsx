@@ -112,8 +112,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" className="h-auto w-full justify-start p-2 text-left">
                 <Avatar className="mr-2 h-8 w-8">
-                  <AvatarImage src="https://picsum.photos/id/40/100/100" data-ai-hint="woman face" />
-                  <AvatarFallback>ER</AvatarFallback>
+                  <AvatarFallback>AD</AvatarFallback>
                 </Avatar>
                 <div className="flex flex-col items-start group-data-[collapsible=icon]:hidden">
                   <span className="text-sm font-medium">{teacherInfo.name}</span>
